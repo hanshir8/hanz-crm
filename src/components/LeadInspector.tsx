@@ -109,7 +109,7 @@ export function LeadInspector({
   const [editPhone, setEditPhone] = useState('');
   const [editInterest, setEditInterest] = useState('');
 
-  // Photo / Video attachment state from PC file picker
+  // Photo / Video attachment state from PC/phone file picker
   const [attachments, setAttachments] = useState<AttachedMediaItem[]>([]);
   const attachmentsRef = useRef<AttachedMediaItem[]>([]);
   const [mediaError, setMediaError] = useState<string | null>(null);
@@ -149,6 +149,7 @@ export function LeadInspector({
     setSelectedTemplateName(defaultTpl ? getTemplateTitle(defaultTpl, 0) : undefined);
   }, [lead?.id]);
 
+  // Only revoke blob URLs when LeadInspector unmounts
   useEffect(() => {
     return () => {
       revokeItems(attachmentsRef.current);
@@ -248,16 +249,9 @@ export function LeadInspector({
     });
   };
 
-  const buildMessageWithMedia = (baseText: string) => {
-    const trimmed = baseText.trim();
-    if (attachments.length === 0) return trimmed;
-    const names = attachments.map((a) => a.name).join(', ');
-    return trimmed ? `${trimmed}\n[Attached: ${names}]` : `[Attached: ${names}]`;
-  };
-
   const meta = getLeadReminderMeta(lead);
-  const composedMessage = buildMessageWithMedia(message);
-  const directWaUrl = buildWhatsAppMeUrl(editPhone || lead.phone, composedMessage);
+  const outgoingMessage = message.trim();
+  const directWaUrl = buildWhatsAppMeUrl(editPhone || lead.phone, outgoingMessage);
 
   const handleGenerateSmartDrafts = async () => {
     setIsLoadingDrafts(true);
@@ -276,8 +270,8 @@ export function LeadInspector({
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!composedMessage || isQuotaLocked || isSending) return;
-    await onSendFollowUp(lead, composedMessage, selectedTemplateName);
+    if (!outgoingMessage || isQuotaLocked || isSending) return;
+    await onSendFollowUp(lead, outgoingMessage, selectedTemplateName);
     setAttachments((prev) => {
       revokeItems(prev);
       return [];
@@ -536,13 +530,13 @@ export function LeadInspector({
             </div>
           )}
 
-          {/* Text Box + Plus Button for Photo/Video from PC */}
+          {/* Text Box + Plus Button for Reference Photo/Video */}
           <div className="flex items-start gap-2">
             <button
               type="button"
               onClick={handleOpenMediaPicker}
-              title="Add photo or video from PC"
-              aria-label="Add photo or video from PC"
+              title="Preview photo or video reference (attach manually inside WhatsApp)"
+              aria-label="Preview photo or video reference"
               className="w-9 h-9 rounded-xl bg-white border border-black/10 hover:bg-[#F5F5F7] text-[#007AFF] flex items-center justify-center shrink-0 transition-colors cursor-pointer mt-0.5"
             >
               <Plus className="w-4 h-4" />
@@ -561,7 +555,7 @@ export function LeadInspector({
               rows={3}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              placeholder="Write your WhatsApp follow-up message or click + to attach a photo/video..."
+              placeholder="Write your WhatsApp follow-up message..."
               className="flex-1 px-3.5 py-2.5 rounded-xl bg-white border border-black/10 text-xs leading-relaxed focus:outline-none focus:border-[#007AFF] transition-colors"
             />
           </div>
@@ -570,51 +564,56 @@ export function LeadInspector({
             <p className="text-[11px] text-[#FF3B30]">{mediaError}</p>
           )}
 
-          {/* Selected Photo / Video Previews */}
+          {/* Local Reference Photo / Video Previews */}
           {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {attachments.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center gap-2 p-1.5 pr-2 rounded-xl bg-white border border-black/10"
-                >
-                  {item.type === 'image' ? (
-                    <img
-                      src={item.previewUrl}
-                      alt={item.name}
-                      className="w-10 h-10 rounded-lg object-cover bg-[#F5F5F7]"
-                    />
-                  ) : (
-                    <video
-                      src={item.previewUrl}
-                      className="w-12 h-10 rounded-lg object-cover bg-black"
-                      muted
-                      playsInline
-                    />
-                  )}
-                  <div className="min-w-0 max-w-[140px]">
-                    <p className="text-[11px] font-medium text-[#1D1D1F] truncate flex items-center gap-1">
-                      {item.type === 'image' ? (
-                        <ImageIcon className="w-3 h-3 text-[#007AFF] shrink-0" />
-                      ) : (
-                        <FileVideo className="w-3 h-3 text-[#007AFF] shrink-0" />
-                      )}
-                      <span className="truncate">{item.name}</span>
-                    </p>
-                    <p className="text-[10px] text-[#6E6E73] tabular-nums">
-                      {(item.sizeBytes / (1024 * 1024)).toFixed(1)} MB
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveAttachment(item.id)}
-                    aria-label={`Remove ${item.name}`}
-                    className="p-1 rounded-lg text-[#8E8E93] hover:text-[#FF3B30] hover:bg-[#FF3B30]/10 cursor-pointer"
+            <div className="space-y-1.5">
+              <p className="text-[11px] text-[#6E6E73]">
+                Reference preview only — attach the file directly inside WhatsApp after opening the chat:
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {attachments.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-2 p-1.5 pr-2 rounded-xl bg-white border border-black/10"
                   >
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
+                    {item.type === 'image' ? (
+                      <img
+                        src={item.previewUrl}
+                        alt={item.name}
+                        className="w-10 h-10 rounded-lg object-cover bg-[#F5F5F7]"
+                      />
+                    ) : (
+                      <video
+                        src={item.previewUrl}
+                        className="w-12 h-10 rounded-lg object-cover bg-black"
+                        muted
+                        playsInline
+                      />
+                    )}
+                    <div className="min-w-0 max-w-[140px]">
+                      <p className="text-[11px] font-medium text-[#1D1D1F] truncate flex items-center gap-1">
+                        {item.type === 'image' ? (
+                          <ImageIcon className="w-3 h-3 text-[#007AFF] shrink-0" />
+                        ) : (
+                          <FileVideo className="w-3 h-3 text-[#007AFF] shrink-0" />
+                        )}
+                        <span className="truncate">{item.name}</span>
+                      </p>
+                      <p className="text-[10px] text-[#6E6E73] tabular-nums">
+                        {(item.sizeBytes / (1024 * 1024)).toFixed(1)} MB
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveAttachment(item.id)}
+                      aria-label={`Remove ${item.name}`}
+                      className="p-1 rounded-lg text-[#8E8E93] hover:text-[#FF3B30] hover:bg-[#FF3B30]/10 cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -631,7 +630,7 @@ export function LeadInspector({
 
             <button
               type="submit"
-              disabled={isQuotaLocked || isSending || !composedMessage}
+              disabled={isQuotaLocked || isSending || !outgoingMessage}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#34C759] hover:bg-[#2DB84F] disabled:opacity-40 text-white text-xs font-semibold transition-colors cursor-pointer"
             >
               <Send className="w-3.5 h-3.5" />
