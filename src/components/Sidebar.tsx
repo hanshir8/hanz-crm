@@ -3,7 +3,7 @@ import {
   CheckCircle2,
   Clock,
   Inbox,
-  MessageSquareCheck,
+  MessageSquare,
   QrCode,
   ShieldCheck,
   Users,
@@ -50,7 +50,7 @@ const NAV_ITEMS: Array<{
   {
     id: 'replied',
     label: 'Replied',
-    icon: MessageSquareCheck,
+    icon: MessageSquare,
     badgeClass: 'bg-emerald-50 text-emerald-700',
   },
   {
