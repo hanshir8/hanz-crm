@@ -5,7 +5,6 @@ import { LeadInspector } from './components/LeadInspector';
 import { LeadList } from './components/LeadList';
 import { LockScreen } from './components/LockScreen';
 import { NewLeadModal } from './components/NewLeadModal';
-import { PasscodeModal } from './components/PasscodeModal';
 import { QrModal } from './components/QrModal';
 import { Sidebar } from './components/Sidebar';
 import { ToastContainer } from './components/ToastContainer';
@@ -18,7 +17,7 @@ import {
   getDueLeadsForNotification,
   getLeadReminderMeta,
   getQuotaStatus,
-  getStoredPasscode,
+  getSupabaseSession,
   hasLeadReminderBeenNotified,
   loadLeads,
   markLeadReminderNotified,
@@ -39,7 +38,6 @@ import type {
 } from './types/crm';
 
 function CrmWorkspaceApp() {
-  const [passcode, setPasscode] = useState<string>(() => getStoredPasscode());
   const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
 
   const [leads, setLeads] = useState<Lead[]>(() => loadLeads());
@@ -54,7 +52,6 @@ function CrmWorkspaceApp() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
 
   const [isNewLeadOpen, setIsNewLeadOpen] = useState<boolean>(false);
-  const [isPasscodeModalOpen, setIsPasscodeModalOpen] = useState<boolean>(false);
   const [isQrModalOpen, setIsQrModalOpen] = useState<boolean>(false);
   const [isHowToUseOpen, setIsHowToUseOpen] = useState<boolean>(false);
 
@@ -107,6 +104,13 @@ function CrmWorkspaceApp() {
 
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  // Auto-unlock if already signed in with Supabase
+  useEffect(() => {
+    getSupabaseSession().then((session) => {
+      if (session) setIsUnlocked(true);
+    });
   }, []);
 
   useEffect(() => {
@@ -384,14 +388,9 @@ function CrmWorkspaceApp() {
     return (
       <>
         <LockScreen
-          expectedPasscode={passcode}
           onUnlock={() => {
             setIsUnlocked(true);
             setQuota(getQuotaStatus());
-          }}
-          onPasscodeUpdated={(newCode) => {
-            setPasscode(newCode);
-            pushToast('success', `Passcode updated (${newCode})`);
           }}
         />
         <ToastContainer toasts={toasts} onDismiss={dismissToast} />
@@ -440,7 +439,6 @@ function CrmWorkspaceApp() {
           }}
           onOpenNewLead={() => setIsNewLeadOpen(true)}
           onLockWorkspace={handleLockWorkspace}
-          onOpenPasscodeModal={() => setIsPasscodeModalOpen(true)}
         />
 
         <div className="flex-1 flex flex-col md:flex-row gap-4 min-h-0">
@@ -481,16 +479,6 @@ function CrmWorkspaceApp() {
         isOpen={isNewLeadOpen}
         onClose={() => setIsNewLeadOpen(false)}
         onCreateLead={handleCreateLead}
-      />
-
-      <PasscodeModal
-        isOpen={isPasscodeModalOpen}
-        currentPasscode={passcode}
-        onClose={() => setIsPasscodeModalOpen(false)}
-        onPasscodeUpdated={(newCode) => {
-          setPasscode(newCode);
-          pushToast('success', `Workspace passcode updated to ${newCode}`);
-        }}
       />
 
       <QrModal
