@@ -530,7 +530,7 @@ export default function App() {
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
         waSession={safeWa}
-        quota={{ ...safeQuota, sentIn24h }}
+        quota={{ ...safeQuota, sentIn24h: sent24h }}
         onOpenNewLead={() => setIsNewLeadOpen(true)}
         onOpenQrModal={() => setIsQrModalOpen(true)}
         onOpenPasscodeModal={() => setIsPasscodeModalOpen(true)}
