@@ -1,688 +1,411 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-  ArrowLeft,
-  CalendarClock,
-  Check,
-  CheckCircle2,
-  Clock,
+  Calendar,
   ExternalLink,
-  FileVideo,
-  Image as ImageIcon,
-  MessageSquare,
-  Pencil,
+  MessageCircle,
   Phone,
-  Plus,
   Send,
   Sparkles,
   Trash2,
-  X,
 } from 'lucide-react';
-import {
-  buildWhatsAppMeUrl,
-  FOLLOW_UP_TEMPLATES,
-  generateSmartDrafts,
-  getLeadReminderMeta,
-} from '../services/crmService';
 import type {
   Lead,
   LeadStatus,
   ReminderCadence,
-  SmartDraftOption,
+  SendQuotaStatus,
+  WhatsAppSessionState,
 } from '../types/crm';
+import {
+  buildWhatsAppMeUrl as defaultBuildWaUrl,
+  computeNextReminderDate,
+  FOLLOW_UP_TEMPLATES,
+  generateSmartDrafts as defaultGenerateDrafts,
+  getLeadReminderMeta,
+  normalizeLeadStatus,
+  sanitizePhoneForWhatsApp as defaultSanitizePhone,
+} from '../services/crmService';
+
+interface SmartDraftOption {
+  id: string;
+  label?: string;
+  title?: string;
+  name?: string;
+  text?: string;
+  body?: string;
+  message?: string;
+  content?: string;
+}
 
 interface LeadInspectorProps {
-  lead: Lead | null;
-  isQuotaLocked: boolean;
-  isSending: boolean;
-  mobilePane: 'list' | 'detail';
-  onBackToList: () => void;
-  onUpdateLead: (updated: Lead) => void;
-  onDeleteLead: (leadId: string) => void;
-  onSendFollowUp: (
-    lead: Lead,
-    message: string,
-    templateName?: string
-  ) => Promise<void>;
+  lead?: Lead | null;
+  quota?: SendQuotaStatus | null;
+  waSession?: WhatsAppSessionState | null;
+  onUpdateLead: (updatedLead: Lead) => Promise<void> | void;
+  onDeleteLead: (leadId: string) => Promise<void> | void;
+  onSendWhatsApp: (lead: Lead, message: string, templateName?: string) => Promise<void> | void;
+  generateSmartDrafts?: (lead: Lead) => SmartDraftOption[];
+  buildWhatsAppMeUrl?: (phone: string | undefined, message: string) => string;
+  sanitizePhoneForWhatsApp?: (phone?: string, defaultCountryCode?: string) => string;
 }
 
-interface AttachedMediaItem {
-  id: string;
-  name: string;
-  type: 'image' | 'video';
-  sizeBytes: number;
-  previewUrl: string;
-}
-
-const STATUS_OPTIONS: LeadStatus[] = ['New', 'Contacted', 'Replied', 'Closed'];
-const CADENCE_OPTIONS: Array<{ value: ReminderCadence; label: string }> = [
-  { value: 3, label: 'Every 3 days' },
-  { value: 4, label: 'Every 4 days' },
-  { value: 7, label: 'Every 7 days' },
-  { value: 0, label: 'Off' },
+const CADENCE_OPTIONS: Array<{ label: string; value: ReminderCadence }> = [
+  { label: 'Every 2 days', value: 2 },
+  { label: 'Every 3 days', value: 3 },
+  { label: 'Every 4 days', value: 4 },
+  { label: 'Every 7 days', value: 7 },
+  { label: 'Off', value: 0 },
 ];
 
-const MAX_PHOTO_BYTES = 8 * 1024 * 1024;  // 8 MB
-const MAX_VIDEO_BYTES = 25 * 1024 * 1024; // 25 MB
-
-function getTemplateText(tpl: any, lead: Lead): string {
-  if (!tpl) {
-    const firstName = lead.name?.trim().split(/\s+/)[0] || 'there';
-    const topic = lead.interest?.trim() || 'your inquiry';
-    return `Hi ${firstName}, just following up on ${topic} — let me know if you have any questions!`;
-  }
-  if (typeof tpl.buildMessage === 'function') {
-    return tpl.buildMessage(lead);
-  }
-  const raw = tpl.body ?? tpl.message ?? '';
-  const firstName = lead.name?.trim().split(/\s+/)[0] || 'there';
-  const topic = lead.interest?.trim() || 'your inquiry';
-  return String(raw)
-    .replace(/\{name\}/gi, firstName)
-    .replace(/\{interest\}/gi, topic)
-    .replace(/\{vehicle\}/gi, topic);
-}
-
-function getTemplateTitle(tpl: any, index: number): string {
-  return tpl?.name || tpl?.title || `Template ${index + 1}`;
-}
+const STATUS_OPTIONS: LeadStatus[] = ['New', 'Contacted', 'Replied', 'Closed'];
 
 export function LeadInspector({
   lead,
-  isQuotaLocked,
-  isSending,
-  mobilePane,
-  onBackToList,
+  quota,
+  waSession,
   onUpdateLead,
   onDeleteLead,
-  onSendFollowUp,
+  onSendWhatsApp,
+  generateSmartDrafts = defaultGenerateDrafts,
+  buildWhatsAppMeUrl = defaultBuildWaUrl,
+  sanitizePhoneForWhatsApp = defaultSanitizePhone,
 }: LeadInspectorProps) {
-  const [message, setMessage] = useState('');
-  const [selectedTemplateName, setSelectedTemplateName] = useState<
-    string | undefined
-  >(undefined);
-  const [smartDrafts, setSmartDrafts] = useState<SmartDraftOption[]>([]);
-  const [isLoadingDrafts, setIsLoadingDrafts] = useState(false);
-
-  // Edit mode state for Name, Phone, and Interest
-  const [isEditingProfile, setIsEditingProfile] = useState(false);
-  const [editName, setEditName] = useState('');
-  const [editPhone, setEditPhone] = useState('');
-  const [editInterest, setEditInterest] = useState('');
-
-  // Photo / Video attachment state from PC/phone file picker
-  const [attachments, setAttachments] = useState<AttachedMediaItem[]>([]);
-  const attachmentsRef = useRef<AttachedMediaItem[]>([]);
-  const [mediaError, setMediaError] = useState<string | null>(null);
-  const mediaInputRef = useRef<HTMLInputElement | null>(null);
-
-  attachmentsRef.current = attachments;
-
-  const revokeItems = (items: AttachedMediaItem[]) => {
-    items.forEach((item) => {
-      if (item.previewUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(item.previewUrl);
-      }
-    });
-  };
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [interest, setInterest] = useState('');
+  const [notes, setNotes] = useState('');
+  const [status, setStatus] = useState<LeadStatus>('New');
+  const [reminderDays, setReminderDays] = useState<ReminderCadence>(3);
+  const [messageDraft, setMessageDraft] = useState('');
+  const [activeTemplateName, setActiveTemplateName] = useState<string | undefined>(undefined);
+  const [isSending, setIsSending] = useState(false);
 
   useEffect(() => {
-    setIsEditingProfile(false);
-    setSmartDrafts([]);
-    setMediaError(null);
-    setAttachments((prev) => {
-      revokeItems(prev);
-      return [];
-    });
-
     if (!lead) {
-      setMessage('');
-      setSelectedTemplateName(undefined);
+      setName('');
+      setPhone('');
+      setInterest('');
+      setNotes('');
+      setStatus('New');
+      setReminderDays(3);
+      setMessageDraft('');
+      setActiveTemplateName(undefined);
       return;
     }
 
-    setEditName(lead.name ?? '');
-    setEditPhone(lead.phone ?? '');
-    setEditInterest(lead.interest ?? '');
+    setName(lead.name ?? '');
+    setPhone(lead.phone ?? '');
+    setInterest(lead.interest ?? '');
+    setNotes(lead.notes ?? '');
+    setStatus(normalizeLeadStatus(lead.status));
+    setReminderDays((lead.reminderDays ?? 3) as ReminderCadence);
 
-    const defaultTpl = FOLLOW_UP_TEMPLATES?.[0];
-    setMessage(getTemplateText(defaultTpl, lead));
-    setSelectedTemplateName(defaultTpl ? getTemplateTitle(defaultTpl, 0) : undefined);
-  }, [lead?.id]);
-
-  // Only revoke blob URLs when LeadInspector unmounts
-  useEffect(() => {
-    return () => {
-      revokeItems(attachmentsRef.current);
-    };
-  }, []);
+    const firstName = (lead.name ?? '').trim().split(/\s+/)[0] || 'there';
+    const topic = (lead.interest ?? '').trim() || 'your inquiry';
+    setMessageDraft(
+      `Hi ${firstName}, following up on ${topic}. Let me know if you have any questions or would like more details.`
+    );
+    setActiveTemplateName(undefined);
+  }, [lead]);
 
   if (!lead) {
     return (
-      <section
-        className={`${
-          mobilePane === 'list' ? 'hidden md:flex' : 'flex'
-        } flex-1 bg-white rounded-2xl border border-black/10 items-center justify-center p-8 text-center`}
-      >
-        <div className="max-w-xs space-y-2">
-          <div className="w-11 h-11 rounded-2xl bg-[#F5F5F7] text-[#6E6E73] flex items-center justify-center mx-auto">
-            <MessageSquare className="w-5 h-5" />
-          </div>
-          <h3 className="text-sm font-semibold text-[#1D1D1F]">
-            Select a lead to inspect
-          </h3>
-          <p className="text-xs text-[#6E6E73] leading-relaxed">
-            Pick any contact on the left to review history, adjust 3–4 day
-            reminder cadence, or send a WhatsApp follow-up.
-          </p>
-        </div>
-      </section>
+      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-[#6E6E73]">
+        <MessageCircle className="w-10 h-10 mb-3 opacity-40" />
+        <p className="text-sm font-medium text-[#1D1D1F]">No lead selected</p>
+        <p className="text-xs mt-1 max-w-xs">
+          Select a lead on the left or click New Lead to inspect details and send a WhatsApp follow-up.
+        </p>
+      </div>
     );
   }
 
-  const handleSaveProfile = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmedName = editName.trim();
-    if (!trimmedName) return;
+  const meta = getLeadReminderMeta(lead);
+  const waStatus = waSession?.status ?? 'qr';
+  const isQuotaLocked = Boolean(quota?.isLocked);
+  const cleanPhone = sanitizePhoneForWhatsApp(phone);
+  const waHref = buildWhatsAppMeUrl(phone, messageDraft);
+  const smartDrafts = generateSmartDrafts(lead);
+  const historyList = Array.isArray(lead.history) ? [...lead.history].reverse() : [];
 
-    const updatedLead: Lead = {
+  const persistDetails = async (overrides?: Partial<Lead>) => {
+    const nextStatus = normalizeLeadStatus(overrides?.status ?? status);
+    const nextCadence = (overrides?.reminderDays ?? reminderDays) as ReminderCadence;
+    const nextReminderAt =
+      overrides?.nextReminderAt !== undefined
+        ? overrides.nextReminderAt
+        : nextCadence > 0
+          ? computeNextReminderDate(nextCadence, new Date())
+          : null;
+
+    const updated: Lead = {
       ...lead,
-      name: trimmedName,
-      phone: editPhone.trim(),
-      interest: editInterest.trim(),
+      name: (overrides?.name ?? name).trim() || 'Unnamed Lead',
+      phone: (overrides?.phone ?? phone).trim(),
+      interest: (overrides?.interest ?? interest).trim(),
+      notes: overrides?.notes !== undefined ? overrides.notes : notes,
+      status: nextStatus,
+      reminderDays: nextCadence,
+      nextReminderAt,
     };
 
-    onUpdateLead(updatedLead);
-    setIsEditingProfile(false);
+    await onUpdateLead(updated);
   };
 
-  const handleCancelProfileEdit = () => {
-    setEditName(lead.name ?? '');
-    setEditPhone(lead.phone ?? '');
-    setEditInterest(lead.interest ?? '');
-    setIsEditingProfile(false);
-  };
-
-  const handleOpenMediaPicker = () => {
-    setMediaError(null);
-    mediaInputRef.current?.click();
-  };
-
-  const handleMediaFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    if (files.length === 0) return;
-
-    const added: AttachedMediaItem[] = [];
-    for (const file of files) {
-      const isImage = file.type.startsWith('image/');
-      const isVideo = file.type.startsWith('video/');
-      if (!isImage && !isVideo) {
-        setMediaError('Only image and video files are supported.');
-        continue;
-      }
-      const limit = isImage ? MAX_PHOTO_BYTES : MAX_VIDEO_BYTES;
-      const limitLabel = isImage ? '8 MB' : '25 MB';
-      if (file.size > limit) {
-        setMediaError(`"${file.name}" exceeds the ${limitLabel} limit.`);
-        continue;
-      }
-      added.push({
-        id: `media_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        name: file.name,
-        type: isImage ? 'image' : 'video',
-        sizeBytes: file.size,
-        previewUrl: URL.createObjectURL(file),
-      });
-    }
-
-    if (added.length > 0) {
-      setAttachments((prev) => [...prev, ...added]);
-    }
-
-    e.target.value = '';
-  };
-
-  const handleRemoveAttachment = (id: string) => {
-    setAttachments((prev) => {
-      const target = prev.find((item) => item.id === id);
-      if (target) revokeItems([target]);
-      return prev.filter((item) => item.id !== id);
-    });
-  };
-
-  const meta = getLeadReminderMeta(lead);
-  const outgoingMessage = message.trim();
-  const directWaUrl = buildWhatsAppMeUrl(editPhone || lead.phone, outgoingMessage);
-
-  const handleGenerateSmartDrafts = async () => {
-    setIsLoadingDrafts(true);
+  const handleSendClick = async () => {
+    const textToSend =
+      messageDraft.trim() || FOLLOW_UP_TEMPLATES[0].buildMessage({ ...lead, name, interest });
+    setIsSending(true);
     try {
-      const drafts = await generateSmartDrafts(lead);
-      const normalized = (Array.isArray(drafts) ? drafts : []).map((d: any, idx: number) => ({
-        id: d.id ?? `draft-${idx}`,
-        label: d.label ?? d.title ?? `Draft ${idx + 1}`,
-        message: d.message ?? d.text ?? d.body ?? '',
-      }));
-      setSmartDrafts(normalized);
+      await onSendWhatsApp(
+        {
+          ...lead,
+          name: name.trim() || lead.name,
+          phone: phone.trim() || lead.phone,
+          interest: interest.trim() || lead.interest,
+          notes,
+          status,
+          reminderDays,
+        },
+        textToSend,
+        activeTemplateName
+      );
     } finally {
-      setIsLoadingDrafts(false);
+      setIsSending(false);
     }
-  };
-
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!outgoingMessage || isQuotaLocked || isSending) return;
-    await onSendFollowUp(lead, outgoingMessage, selectedTemplateName);
-    setAttachments((prev) => {
-      revokeItems(prev);
-      return [];
-    });
-    setMediaError(null);
   };
 
   return (
-    <section
-      className={`${
-        mobilePane === 'list' ? 'hidden md:flex' : 'flex'
-      } flex-1 bg-white rounded-2xl border border-black/10 flex-col min-h-0 overflow-hidden`}
-    >
-      {/* Top Bar */}
-      <div className="p-4 border-b border-black/10 flex items-start justify-between gap-3">
-        <div className="flex items-start gap-2.5 min-w-0 flex-1">
+    <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
+      <div className="bg-white rounded-3xl border border-black/[0.07] p-5 space-y-4 shadow-2xs">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-lg font-semibold tracking-tight text-[#1D1D1F] truncate">
+                {lead.name || 'Unnamed Lead'}
+              </h2>
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-[#F5F5F7] text-[#1D1D1F]">
+                {meta.label}
+              </span>
+              <span className="text-[11px] text-[#6E6E73]">WA: {waStatus}</span>
+            </div>
+            <p className="text-xs text-[#6E6E73] mt-0.5 flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1">
+                <Phone className="w-3 h-3" />
+                {cleanPhone ? `+${cleanPhone}` : phone || 'No phone number'}
+              </span>
+              {lead.nextReminderAt && (
+                <span className="inline-flex items-center gap-1">
+                  <Calendar className="w-3 h-3" />
+                  Next: {new Date(lead.nextReminderAt).toLocaleDateString()}
+                </span>
+              )}
+            </p>
+          </div>
+
           <button
             type="button"
-            onClick={onBackToList}
-            aria-label="Back to leads"
-            className="md:hidden p-1.5 rounded-xl bg-[#F5F5F7] text-[#1D1D1F] cursor-pointer mt-0.5"
+            onClick={() => void onDeleteLead(lead.id)}
+            title="Delete lead"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-red-200 text-red-600 hover:bg-red-50 text-xs font-medium transition cursor-pointer"
           >
-            <ArrowLeft className="w-4 h-4" />
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Delete</span>
           </button>
-
-          {isEditingProfile ? (
-            <form onSubmit={handleSaveProfile} className="flex-1 space-y-2">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <input
-                  type="text"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  placeholder="Lead name"
-                  required
-                  className="px-2.5 py-1.5 rounded-lg bg-[#F5F5F7] border border-[#007AFF]/40 text-xs font-medium text-[#1D1D1F] focus:outline-none focus:bg-white focus:border-[#007AFF]"
-                />
-                <input
-                  type="text"
-                  value={editPhone}
-                  onChange={(e) => setEditPhone(e.target.value)}
-                  placeholder="Phone (e.g. 60123456789)"
-                  className="px-2.5 py-1.5 rounded-lg bg-[#F5F5F7] border border-[#007AFF]/40 font-mono text-xs text-[#1D1D1F] focus:outline-none focus:bg-white focus:border-[#007AFF]"
-                />
-                <input
-                  type="text"
-                  value={editInterest}
-                  onChange={(e) => setEditInterest(e.target.value)}
-                  placeholder="Interest / model"
-                  className="px-2.5 py-1.5 rounded-lg bg-[#F5F5F7] border border-[#007AFF]/40 text-xs text-[#1D1D1F] focus:outline-none focus:bg-white focus:border-[#007AFF]"
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="submit"
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#007AFF] text-white text-xs font-medium hover:bg-[#0066D6] cursor-pointer"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  Save Details
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCancelProfileEdit}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#F5F5F7] text-[#6E6E73] text-xs font-medium hover:text-[#1D1D1F] cursor-pointer"
-                >
-                  <X className="w-3.5 h-3.5" />
-                  Cancel
-                </button>
-              </div>
-            </form>
-          ) : (
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <h2 className="text-base font-semibold tracking-tight text-[#1D1D1F] truncate">
-                  {lead.name}
-                </h2>
-                <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-[#007AFF]/10 text-[#007AFF] shrink-0">
-                  {meta.label}
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center gap-3 mt-0.5 text-xs text-[#6E6E73]">
-                <span className="inline-flex items-center gap-1 font-mono">
-                  <Phone className="w-3 h-3" />
-                  {lead.phone || 'No phone'}
-                </span>
-                <span className="truncate">• {lead.interest || 'No interest set'}</span>
-              </div>
-            </div>
-          )}
         </div>
 
-        <div className="flex items-center gap-1 shrink-0">
-          {!isEditingProfile && (
-            <button
-              type="button"
-              onClick={() => {
-                setEditName(lead.name ?? '');
-                setEditPhone(lead.phone ?? '');
-                setEditInterest(lead.interest ?? '');
-                setIsEditingProfile(true);
-              }}
-              title="Edit lead details"
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium text-[#1D1D1F] bg-[#F5F5F7] hover:bg-black/10 transition-colors cursor-pointer"
-            >
-              <Pencil className="w-3.5 h-3.5" />
-              <span>Edit</span>
-            </button>
-          )}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-[11px] font-medium text-[#6E6E73] mb-1">
+              Lead Name
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onBlur={() => void persistDetails()}
+              className="w-full px-3 py-2 rounded-xl border border-black/12 bg-[#FAFAFC] text-xs sm:text-sm focus:outline-none focus:border-[#0071E3]"
+            />
+          </div>
 
-          <button
-            type="button"
-            onClick={() => onDeleteLead(lead.id)}
-            title="Delete lead"
-            className="p-2 rounded-xl text-[#8E8E93] hover:text-[#FF3B30] hover:bg-[#FF3B30]/10 transition-colors cursor-pointer"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
+          <div>
+            <label className="block text-[11px] font-medium text-[#6E6E73] mb-1">
+              Phone Number
+            </label>
+            <input
+              type="text"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              onBlur={() => void persistDetails()}
+              placeholder="+60123456789"
+              className="w-full px-3 py-2 rounded-xl border border-black/12 bg-[#FAFAFC] text-xs sm:text-sm focus:outline-none focus:border-[#0071E3]"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-[#6E6E73] mb-1">
+              Vehicle / Interest
+            </label>
+            <input
+              type="text"
+              value={interest}
+              onChange={(e) => setInterest(e.target.value)}
+              onBlur={() => void persistDetails()}
+              placeholder="e.g., Tiggo 7 PHEV / Tint package"
+              className="w-full px-3 py-2 rounded-xl border border-black/12 bg-[#FAFAFC] text-xs sm:text-sm focus:outline-none focus:border-[#0071E3]"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-[11px] font-medium text-[#6E6E73] mb-1">
+                Status
+              </label>
+              <select
+                value={status}
+                onChange={(e) => {
+                  const next = normalizeLeadStatus(e.target.value);
+                  setStatus(next);
+                  void persistDetails({ status: next });
+                }}
+                className="w-full px-2.5 py-2 rounded-xl border border-black/12 bg-[#FAFAFC] text-xs sm:text-sm focus:outline-none focus:border-[#0071E3] cursor-pointer"
+              >
+                {STATUS_OPTIONS.map((st) => (
+                  <option key={st} value={st}>
+                    {st}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium text-[#6E6E73] mb-1">
+                Cadence
+              </label>
+              <select
+                value={reminderDays}
+                onChange={(e) => {
+                  const nextDays = Number(e.target.value) as ReminderCadence;
+                  setReminderDays(nextDays);
+                  void persistDetails({ reminderDays: nextDays });
+                }}
+                className="w-full px-2.5 py-2 rounded-xl border border-black/12 bg-[#FAFAFC] text-xs sm:text-sm focus:outline-none focus:border-[#0071E3] cursor-pointer"
+              >
+                {CADENCE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-[11px] font-medium text-[#6E6E73] mb-1">
+            Notes
+          </label>
+          <textarea
+            rows={2}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            onBlur={() => void persistDetails()}
+            placeholder="Key details, budget, or follow-up context..."
+            className="w-full px-3 py-2 rounded-xl border border-black/12 bg-[#FAFAFC] text-xs sm:text-sm focus:outline-none focus:border-[#0071E3]"
+          />
         </div>
       </div>
 
-      {/* Body */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
-        {/* Status & Cadence Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="p-3 rounded-xl bg-[#F5F5F7] space-y-1.5">
-            <label className="block text-[11px] font-semibold uppercase tracking-wider text-[#6E6E73]">
-              Pipeline Status
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {STATUS_OPTIONS.map((status) => (
-                <button
-                  key={status}
-                  type="button"
-                  onClick={() => onUpdateLead({ ...lead, status })}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                    lead.status === status
-                      ? 'bg-[#1D1D1F] text-white'
-                      : 'bg-white text-[#1D1D1F] hover:bg-black/5'
-                  }`}
-                >
-                  {status}
-                </button>
-              ))}
-            </div>
+      <div className="bg-white rounded-3xl border border-black/[0.07] p-5 space-y-3.5 shadow-2xs">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-[#1D1D1F]">
+            <Sparkles className="w-4 h-4 text-[#0071E3]" />
+            <span>WhatsApp Follow-Up Message</span>
           </div>
 
-          <div className="p-3 rounded-xl bg-[#F5F5F7] space-y-1.5">
-            <label className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-[#6E6E73]">
-              <CalendarClock className="w-3.5 h-3.5" />
-              Reminder Cadence
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {CADENCE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() =>
-                    onUpdateLead({ ...lead, reminderDays: opt.value })
-                  }
-                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                    lead.reminderDays === opt.value
-                      ? 'bg-[#007AFF] text-white'
-                      : 'bg-white text-[#1D1D1F] hover:bg-black/5'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Notes */}
-        <div className="space-y-1.5">
-          <label
-            htmlFor="lead-notes"
-            className="block text-xs font-semibold text-[#1D1D1F]"
-          >
-            Context & Notes
-          </label>
-          <textarea
-            id="lead-notes"
-            rows={2}
-            value={lead.notes ?? ''}
-            onChange={(e) => onUpdateLead({ ...lead, notes: e.target.value })}
-            placeholder="Add car model, budget, trade-in details, or preferred follow-up timing..."
-            className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-transparent text-xs focus:outline-none focus:bg-white focus:border-[#007AFF] transition-colors resize-none"
-          />
-        </div>
-
-        {/* Composer */}
-        <form
-          onSubmit={handleSend}
-          className="p-4 rounded-2xl border border-black/10 bg-[#F5F5F7]/50 space-y-3"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-[#1D1D1F]">
-              WhatsApp Follow-Up Message
-            </span>
-
-            <button
-              type="button"
-              onClick={handleGenerateSmartDrafts}
-              disabled={isLoadingDrafts}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-black/10 hover:bg-[#F5F5F7] text-xs font-medium text-[#007AFF] transition-colors cursor-pointer"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              {isLoadingDrafts ? 'Drafting...' : 'Smart Drafts'}
-            </button>
-          </div>
-
-          {/* Preset Templates */}
-          <div className="flex flex-wrap gap-1.5">
-            {(FOLLOW_UP_TEMPLATES ?? []).map((tpl, idx) => {
-              const title = getTemplateTitle(tpl, idx);
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {smartDrafts.map((draft, idx) => {
+              const label = draft.label || draft.title || draft.name || `Template ${idx + 1}`;
+              const body =
+                draft.text || draft.body || draft.message || draft.content || '';
               return (
                 <button
-                  key={tpl.id ?? title}
+                  key={draft.id || idx}
                   type="button"
                   onClick={() => {
-                    setMessage(getTemplateText(tpl, lead));
-                    setSelectedTemplateName(title);
+                    setMessageDraft(body);
+                    setActiveTemplateName(label);
                   }}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer ${
-                    selectedTemplateName === title
-                      ? 'bg-[#007AFF]/10 border-[#007AFF]/30 text-[#007AFF]'
-                      : 'bg-white border-black/10 text-[#6E6E73] hover:text-[#1D1D1F]'
-                  }`}
+                  className="px-2.5 py-1 rounded-xl bg-[#F5F5F7] hover:bg-[#EBEBEF] text-[11px] font-medium text-[#1D1D1F] transition cursor-pointer"
                 >
-                  {title}
+                  {label}
                 </button>
               );
             })}
           </div>
+        </div>
 
-          {/* Smart Draft Chips */}
-          {smartDrafts.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
-              {smartDrafts.map((draft) => (
-                <button
-                  key={draft.id}
-                  type="button"
-                  onClick={() => {
-                    setMessage(draft.message);
-                    setSelectedTemplateName(draft.label);
-                  }}
-                  className="text-left p-2.5 rounded-xl bg-white border border-[#007AFF]/25 hover:border-[#007AFF] transition-colors cursor-pointer space-y-1"
-                >
-                  <span className="block text-[11px] font-semibold text-[#007AFF]">
-                    {draft.label}
-                  </span>
-                  <span className="block text-[11px] text-[#6E6E73] line-clamp-2">
-                    {draft.message}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
+        <textarea
+          rows={4}
+          value={messageDraft}
+          onChange={(e) => setMessageDraft(e.target.value)}
+          placeholder="Write your WhatsApp follow-up message..."
+          className="w-full px-3.5 py-2.5 rounded-2xl border border-black/12 bg-[#FAFAFC] text-xs sm:text-sm focus:outline-none focus:border-[#0071E3]"
+        />
 
-          {/* Text Box + Plus Button for Reference Photo/Video */}
-          <div className="flex items-start gap-2">
-            <button
-              type="button"
-              onClick={handleOpenMediaPicker}
-              title="Preview photo or video reference (attach manually inside WhatsApp)"
-              aria-label="Preview photo or video reference"
-              className="w-9 h-9 rounded-xl bg-white border border-black/10 hover:bg-[#F5F5F7] text-[#007AFF] flex items-center justify-center shrink-0 transition-colors cursor-pointer mt-0.5"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+          <a
+            href={waHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-black/12 text-xs font-medium text-[#1D1D1F] hover:bg-[#F5F5F7] transition"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            <span>Direct WhatsApp Link</span>
+          </a>
 
-            <input
-              ref={mediaInputRef}
-              type="file"
-              accept="image/*,video/*"
-              multiple
-              onChange={handleMediaFileChange}
-              className="hidden"
-            />
-
-            <textarea
-              rows={3}
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              placeholder="Write your WhatsApp follow-up message..."
-              className="flex-1 px-3.5 py-2.5 rounded-xl bg-white border border-black/10 text-xs leading-relaxed focus:outline-none focus:border-[#007AFF] transition-colors"
-            />
-          </div>
-
-          {mediaError && (
-            <p className="text-[11px] text-[#FF3B30]">{mediaError}</p>
-          )}
-
-          {/* Local Reference Photo / Video Previews */}
-          {attachments.length > 0 && (
-            <div className="space-y-1.5">
-              <p className="text-[11px] text-[#6E6E73]">
-                Reference preview only — attach the file directly inside WhatsApp after opening the chat:
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {attachments.map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center gap-2 p-1.5 pr-2 rounded-xl bg-white border border-black/10"
-                  >
-                    {item.type === 'image' ? (
-                      <img
-                        src={item.previewUrl}
-                        alt={item.name}
-                        className="w-10 h-10 rounded-lg object-cover bg-[#F5F5F7]"
-                      />
-                    ) : (
-                      <video
-                        src={item.previewUrl}
-                        className="w-12 h-10 rounded-lg object-cover bg-black"
-                        muted
-                        playsInline
-                      />
-                    )}
-                    <div className="min-w-0 max-w-[140px]">
-                      <p className="text-[11px] font-medium text-[#1D1D1F] truncate flex items-center gap-1">
-                        {item.type === 'image' ? (
-                          <ImageIcon className="w-3 h-3 text-[#007AFF] shrink-0" />
-                        ) : (
-                          <FileVideo className="w-3 h-3 text-[#007AFF] shrink-0" />
-                        )}
-                        <span className="truncate">{item.name}</span>
-                      </p>
-                      <p className="text-[10px] text-[#6E6E73] tabular-nums">
-                        {(item.sizeBytes / (1024 * 1024)).toFixed(1)} MB
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveAttachment(item.id)}
-                      aria-label={`Remove ${item.name}`}
-                      className="p-1 rounded-lg text-[#8E8E93] hover:text-[#FF3B30] hover:bg-[#FF3B30]/10 cursor-pointer"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <a
-              href={directWaUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-[#6E6E73] hover:text-[#1D1D1F]"
-            >
-              Preview wa.me link
-              <ExternalLink className="w-3 h-3" />
-            </a>
-
-            <button
-              type="submit"
-              disabled={isQuotaLocked || isSending || !outgoingMessage}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#34C759] hover:bg-[#2DB84F] disabled:opacity-40 text-white text-xs font-semibold transition-colors cursor-pointer"
-            >
-              <Send className="w-3.5 h-3.5" />
+          <button
+            type="button"
+            disabled={isSending || isQuotaLocked}
+            onClick={() => void handleSendClick()}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0071E3] text-white text-xs sm:text-sm font-medium hover:opacity-90 disabled:opacity-50 transition cursor-pointer"
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>
               {isQuotaLocked
-                ? '24h Quota Reached (30/30)'
+                ? 'Daily Limit Reached'
                 : isSending
                   ? 'Sending...'
-                  : 'Send & Schedule Next Reminder'}
-            </button>
-          </div>
-        </form>
-
-        {/* Outreach History */}
-        <div className="space-y-2.5">
-          <h3 className="text-xs font-semibold text-[#1D1D1F] flex items-center gap-1.5">
-            <Clock className="w-3.5 h-3.5 text-[#6E6E73]" />
-            Follow-Up History ({lead.history?.length || 0})
-          </h3>
-
-          {!lead.history || lead.history.length === 0 ? (
-            <p className="text-xs text-[#6E6E73] bg-[#F5F5F7] rounded-xl p-3">
-              No messages logged yet. Sending a follow-up automatically records
-              it here and schedules the next reminder.
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {lead.history.map((item: any) => {
-                const timestamp = item.sentAt || item.at;
-                return (
-                  <div
-                    key={item.id}
-                    className="p-3 rounded-xl bg-[#F5F5F7] border border-black/5 space-y-1"
-                  >
-                    <div className="flex items-center justify-between gap-2 text-[11px] text-[#6E6E73]">
-                      <span className="inline-flex items-center gap-1 font-medium text-[#1D1D1F]">
-                        <CheckCircle2 className="w-3 h-3 text-[#34C759]" />
-                        {item.templateName || 'Follow-Up Sent'}
-                      </span>
-                      <span className="tabular-nums">
-                        {timestamp ? new Date(timestamp).toLocaleString() : ''}
-                      </span>
-                    </div>
-                    <p className="text-xs text-[#1D1D1F] leading-relaxed">
-                      {item.message}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                  : 'Send & Log Follow-Up'}
+            </span>
+          </button>
         </div>
       </div>
-    </section>
+
+      {historyList.length > 0 && (
+        <div className="bg-white rounded-3xl border border-black/[0.07] p-5 space-y-2.5 shadow-2xs">
+          <h3 className="text-xs font-semibold text-[#1D1D1F]">Activity History</h3>
+          <div className="space-y-2">
+            {historyList.map((entry) => (
+              <div
+                key={entry.id}
+                className="rounded-2xl bg-[#F5F5F7] px-3.5 py-2.5 text-xs space-y-1"
+              >
+                <div className="flex items-center justify-between gap-2 text-[11px] text-[#6E6E73]">
+                  <span className="font-medium text-[#1D1D1F]">{entry.type}</span>
+                  <span>
+                    {entry.at ? new Date(entry.at).toLocaleString() : ''}
+                  </span>
+                </div>
+                {entry.message && (
+                  <p className="text-xs text-[#1D1D1F]/85 break-words">{entry.message}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
+
+export default LeadInspector;
