@@ -13,12 +13,13 @@ const LEADS_KEY = 'goodshield_crm_leads_v2';
 const SENT_LOG_KEY = 'goodshield_crm_sent_log_v1';
 const WA_SESSION_KEY = 'goodshield_crm_wa_session_v1';
 const NOTIFIED_KEY = 'goodshield_crm_notified_v1';
+const PASSCODE_KEY = 'goodshield_crm_passcode_v1';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const DAILY_SEND_LIMIT = 45;
 
 /* ------------------------------------------------------------------ */
-/* Storage helpers                                                     */
+/* Storage & Passcode helpers                                          */
 /* ------------------------------------------------------------------ */
 
 function readJson<T>(key: string, fallback: T): T {
@@ -33,6 +34,26 @@ function readJson<T>(key: string, fallback: T): T {
 function writeJson(key: string, value: unknown): void {
   try {
     localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function getStoredPasscode(): string | null {
+  try {
+    return localStorage.getItem(PASSCODE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredPasscode(passcode: string | null): void {
+  try {
+    if (passcode && passcode.trim().length > 0) {
+      localStorage.setItem(PASSCODE_KEY, passcode.trim());
+    } else {
+      localStorage.removeItem(PASSCODE_KEY);
+    }
   } catch {
     // ignore storage errors
   }
@@ -100,6 +121,14 @@ export function computeNextReminderDate(
   return new Date(fromDate.getTime() + days * DAY_MS).toISOString();
 }
 
+function reminderDaysToSqlCadence(days: ReminderCadence): string {
+  if (!days || days <= 0) return 'off';
+  if (days === 2) return 'every_2_days';
+  if (days === 4) return 'every_4_days';
+  if (days === 7) return 'every_7_days';
+  return 'every_3_days';
+}
+
 function buildSampleLeads(): Lead[] {
   const now = new Date();
   const make = (
@@ -156,14 +185,23 @@ export async function updateLead(updatedLead: Lead): Promise<Lead> {
   saveLeads(nextLeads);
 
   if (supabase) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const userId = sessionData.session?.user?.id;
+
+    if (!userId) {
+      return updatedLead;
+    }
+
     const { error } = await supabase.from('leads').upsert(
       {
         id: updatedLead.id,
+        user_id: userId,
         name: updatedLead.name,
         phone: updatedLead.phone || null,
         vehicle_model: updatedLead.interest || null,
         notes: updatedLead.notes || null,
-        status: updatedLead.status.toLowerCase(),
+        status: (updatedLead.status || 'new').toLowerCase(),
+        cadence: reminderDaysToSqlCadence(updatedLead.reminderDays),
         next_follow_up_at: updatedLead.nextReminderAt || new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
