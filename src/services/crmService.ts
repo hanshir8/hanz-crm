@@ -12,6 +12,8 @@ import type {
 const LEADS_STORAGE_KEY = 'goodshield_crm_leads_v1';
 const QUOTA_STORAGE_KEY = 'goodshield_crm_quota_v1';
 const SESSION_STORAGE_KEY = 'goodshield_crm_session_v1';
+const PASSCODE_STORAGE_KEY = 'goodshield_crm_passcode_v1';
+const DEFAULT_PASSCODE = '1234';
 
 export const FOLLOW_UP_TEMPLATES: FollowUpTemplate[] = [
   {
@@ -100,6 +102,10 @@ function writeLocalLeads(leads: Lead[]): void {
 }
 
 export function isSupabaseConnected(): boolean {
+  return Boolean(supabase);
+}
+
+export function isCloudSyncConfigured(): boolean {
   return Boolean(supabase);
 }
 
@@ -301,4 +307,56 @@ export function saveWorkspaceSession(session: WorkspaceSession): void {
   } catch {
     // Ignore storage errors
   }
+}
+
+export function resetStoredPasscodeToDefault(): string {
+  try {
+    localStorage.setItem(PASSCODE_STORAGE_KEY, DEFAULT_PASSCODE);
+  } catch {
+    // Ignore storage quota errors
+  }
+
+  const currentSession = loadWorkspaceSession();
+  saveWorkspaceSession({
+    ...currentSession,
+    hasPasscode: true,
+    isLocked: false,
+    lastUnlockedAt: new Date().toISOString(),
+  });
+
+  return DEFAULT_PASSCODE;
+}
+
+export async function sendSupabasePasswordReset(
+  email: string
+): Promise<{ ok: boolean; message: string }> {
+  const trimmedEmail = email.trim();
+  if (!trimmedEmail) {
+    return { ok: false, message: 'Please enter your email address first.' };
+  }
+
+  if (!supabase) {
+    return {
+      ok: false,
+      message: 'Cloud sync is not configured yet. Reset the local passcode instead.',
+    };
+  }
+
+  const redirectTo =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}/hanz-crm/`
+      : 'https://hanshir8.github.io/hanz-crm/';
+
+  const { error } = await supabase.auth.resetPasswordForEmail(trimmedEmail, {
+    redirectTo,
+  });
+
+  if (error) {
+    return { ok: false, message: error.message };
+  }
+
+  return {
+    ok: true,
+    message: `Password reset email sent to ${trimmedEmail}.`,
+  };
 }
