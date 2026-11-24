@@ -4,7 +4,6 @@ import {
   Clock,
   Flame,
   Inbox,
-  KeyRound,
   Layers,
   Lock,
   Plus,
@@ -20,7 +19,6 @@ interface SidebarProps {
   onSelectView: (view: SmartViewId) => void;
   onOpenNewLead: () => void;
   onLockWorkspace: () => void;
-  onOpenPasscodeModal: () => void;
 }
 
 const NAV_ITEMS: Array<{
@@ -44,7 +42,6 @@ export function Sidebar({
   onSelectView,
   onOpenNewLead,
   onLockWorkspace,
-  onOpenPasscodeModal,
 }: SidebarProps) {
   const content = (
     <aside className="w-60 shrink-0 bg-white rounded-2xl border border-black/10 p-3 flex flex-col justify-between h-full">
@@ -122,25 +119,13 @@ export function Sidebar({
         <button
           type="button"
           onClick={() => {
-            onOpenPasscodeModal();
-            onCloseMobileMenu();
-          }}
-          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-[#1D1D1F] hover:bg-black/[0.04] transition-colors cursor-pointer"
-        >
-          <KeyRound className="w-4 h-4 text-[#6E6E73] shrink-0" />
-          <span>Passcode</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
             onLockWorkspace();
             onCloseMobileMenu();
           }}
           className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-[#1D1D1F] hover:bg-black/[0.04] transition-colors cursor-pointer"
         >
           <Lock className="w-4 h-4 text-[#6E6E73] shrink-0" />
-          <span>Lock Workspace</span>
+          <span>Sign Out</span>
         </button>
       </div>
     </aside>
