@@ -425,8 +425,7 @@ export default function App() {
         const result = await sendWhatsAppFollowUp(lead, message, {
           templateName,
           isQrConnected: ensureSafeWaSession(waSession).status === 'connected',
-        });
-        recordSentTimestamp();
+        })
         setQuota(ensureSafeQuota(result.quota));
         await handleUpdateLead(result.updatedLead);
         pushToast('WhatsApp opened', `Follow-up prepared for ${lead.name}`, 'success');
