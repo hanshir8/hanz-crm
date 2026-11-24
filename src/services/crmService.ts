@@ -3,6 +3,7 @@ import type {
   DesktopNotificationPermission,
   FollowUpTemplate,
   Lead,
+  LeadStatus,
   ReminderCadence,
   SendQuotaStatus,
   SmartViewId,
@@ -110,7 +111,7 @@ export function generateSmartDrafts(lead: Lead) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Leads                                                               */
+/* Leads & Supabase Sync                                               */
 /* ------------------------------------------------------------------ */
 
 export function computeNextReminderDate(
@@ -127,6 +128,23 @@ function reminderDaysToSqlCadence(days: ReminderCadence): string {
   if (days === 4) return 'every_4_days';
   if (days === 7) return 'every_7_days';
   return 'every_3_days';
+}
+
+function sqlCadenceToReminderDays(cadence: unknown): ReminderCadence {
+  const val = String(cadence ?? '').trim().toLowerCase();
+  if (val === 'off' || val === '0' || val === 'none') return 0;
+  if (val === 'every_2_days' || val === '2') return 2;
+  if (val === 'every_4_days' || val === '4') return 4;
+  if (val === 'every_7_days' || val === '7') return 7;
+  return 3;
+}
+
+function toDisplayStatus(raw: unknown): LeadStatus {
+  const val = String(raw ?? 'new').trim().toLowerCase();
+  if (val === 'contacted') return 'Contacted';
+  if (val === 'replied') return 'Replied';
+  if (val === 'closed') return 'Closed';
+  return 'New';
 }
 
 function buildSampleLeads(): Lead[] {
@@ -175,6 +193,50 @@ export function restoreSampleLeads(): Lead[] {
   return samples;
 }
 
+export async function fetchLeadsFromSupabase(userId?: string): Promise<Lead[]> {
+  const client = supabase;
+  if (!client) return loadLeads();
+
+  let activeUserId = userId;
+  if (!activeUserId) {
+    const { data: sessionData } = await client.auth.getSession();
+    activeUserId = sessionData.session?.user?.id;
+  }
+  if (!activeUserId) return loadLeads();
+
+  const { data, error } = await client
+    .from('leads')
+    .select('id, user_id, name, phone, vehicle_model, notes, status, cadence, next_follow_up_at, created_at, updated_at')
+    .eq('user_id', activeUserId)
+    .order('next_follow_up_at', { ascending: true });
+
+  if (error) {
+    console.warn('Supabase fetchLeadsFromSupabase warning:', error.message);
+    return loadLeads();
+  }
+
+  const localById = new Map(loadLeads().map((item) => [item.id, item]));
+  const mapped: Lead[] = (data ?? []).map((row: any) => {
+    const local = localById.get(String(row.id));
+    return {
+      id: String(row.id),
+      name: String(row.name ?? local?.name ?? 'Unnamed Lead'),
+      phone: String(row.phone ?? local?.phone ?? ''),
+      interest: String(row.vehicle_model ?? local?.interest ?? ''),
+      notes: String(row.notes ?? local?.notes ?? ''),
+      status: toDisplayStatus(row.status),
+      reminderDays: sqlCadenceToReminderDays(row.cadence),
+      lastContactedAt: local?.lastContactedAt ?? null,
+      nextReminderAt: row.next_follow_up_at ?? local?.nextReminderAt ?? null,
+      history: local?.history ?? [],
+      createdAt: row.created_at ?? local?.createdAt ?? new Date().toISOString(),
+    };
+  });
+
+  saveLeads(mapped);
+  return mapped;
+}
+
 export async function updateLead(updatedLead: Lead): Promise<Lead> {
   const existing = loadLeads();
   const exists = existing.some((item) => item.id === updatedLead.id);
@@ -184,15 +246,16 @@ export async function updateLead(updatedLead: Lead): Promise<Lead> {
 
   saveLeads(nextLeads);
 
-  if (supabase) {
-    const { data: sessionData } = await supabase.auth.getSession();
+  const client = supabase;
+  if (client) {
+    const { data: sessionData } = await client.auth.getSession();
     const userId = sessionData.session?.user?.id;
 
     if (!userId) {
       return updatedLead;
     }
 
-    const { error } = await supabase.from('leads').upsert(
+    const { error } = await client.from('leads').upsert(
       {
         id: updatedLead.id,
         user_id: userId,
@@ -219,8 +282,15 @@ export async function deleteLead(leadId: string): Promise<void> {
   const filtered = loadLeads().filter((item) => item.id !== leadId);
   saveLeads(filtered);
 
-  if (supabase) {
-    const { error } = await supabase.from('leads').delete().eq('id', leadId);
+  const client = supabase;
+  if (client) {
+    const { data: sessionData } = await client.auth.getSession();
+    const userId = sessionData.session?.user?.id;
+    let query = client.from('leads').delete().eq('id', leadId);
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+    const { error } = await query;
     if (error) {
       console.warn('Supabase deleteLead sync warning:', error.message);
     }
@@ -325,7 +395,6 @@ export async function sendWhatsAppFollowUp(
     throw new Error('Daily WhatsApp send limit reached.');
   }
 
-  // Never send a blank message
   const finalMessage =
     message?.trim() || FOLLOW_UP_TEMPLATES[0].buildMessage(lead);
 
@@ -438,9 +507,10 @@ function getRedirectUrl(): string {
 }
 
 export async function signInWithSupabase(email: string, password: string): Promise<AuthResult> {
-  if (!supabase) return { ok: false, message: 'Cloud sync is not configured.' };
+  const client = supabase;
+  if (!client) return { ok: false, message: 'Cloud sync is not configured.' };
 
-  const { error } = await supabase.auth.signInWithPassword({
+  const { error } = await client.auth.signInWithPassword({
     email: email.trim(),
     password,
   });
@@ -452,11 +522,12 @@ export async function signUpWithSupabase(
   email: string,
   password: string
 ): Promise<AuthResult & { requiresEmailConfirmation: boolean }> {
-  if (!supabase) {
+  const client = supabase;
+  if (!client) {
     return { ok: false, message: 'Cloud sync is not configured.', requiresEmailConfirmation: false };
   }
 
-  const { data, error } = await supabase.auth.signUp({
+  const { data, error } = await client.auth.signUp({
     email: email.trim(),
     password,
     options: { emailRedirectTo: getRedirectUrl() },
@@ -478,9 +549,10 @@ export async function sendSupabasePasswordReset(email: string): Promise<AuthResu
   if (!trimmedEmail) {
     return { ok: false, message: 'Please enter your email address first.' };
   }
-  if (!supabase) return { ok: false, message: 'Cloud sync is not configured.' };
+  const client = supabase;
+  if (!client) return { ok: false, message: 'Cloud sync is not configured.' };
 
-  const { error } = await supabase.auth.resetPasswordForEmail(trimmedEmail, {
+  const { error } = await client.auth.resetPasswordForEmail(trimmedEmail, {
     redirectTo: getRedirectUrl(),
   });
   if (error) return { ok: false, message: error.message };
@@ -489,27 +561,31 @@ export async function sendSupabasePasswordReset(email: string): Promise<AuthResu
 }
 
 export async function updateSupabasePassword(newPassword: string): Promise<AuthResult> {
-  if (!supabase) return { ok: false, message: 'Cloud sync is not configured.' };
+  const client = supabase;
+  if (!client) return { ok: false, message: 'Cloud sync is not configured.' };
 
-  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  const { error } = await client.auth.updateUser({ password: newPassword });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: 'Password updated. Please sign in.' };
 }
 
 export async function getSupabaseSession() {
-  if (!supabase) return null;
-  const { data } = await supabase.auth.getSession();
+  const client = supabase;
+  if (!client) return null;
+  const { data } = await client.auth.getSession();
   return data.session;
 }
 
 export async function clearSupabaseAuthSession(): Promise<void> {
-  if (!supabase) return;
-  await supabase.auth.signOut();
+  const client = supabase;
+  if (!client) return;
+  await client.auth.signOut();
 }
 
 export function onSupabasePasswordRecovery(callback: () => void): () => void {
-  if (!supabase) return () => {};
-  const { data } = supabase.auth.onAuthStateChange((event) => {
+  const client = supabase;
+  if (!client) return () => {};
+  const { data } = client.auth.onAuthStateChange((event) => {
     if (event === 'PASSWORD_RECOVERY') callback();
   });
   return () => data.subscription.unsubscribe();
