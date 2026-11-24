@@ -12,8 +12,6 @@ import type {
 const LEADS_STORAGE_KEY = 'goodshield_crm_leads_v1';
 const QUOTA_STORAGE_KEY = 'goodshield_crm_quota_v1';
 const SESSION_STORAGE_KEY = 'goodshield_crm_session_v1';
-const PASSCODE_STORAGE_KEY = 'goodshield_crm_passcode_v1';
-const DEFAULT_PASSCODE = '1234';
 
 export const FOLLOW_UP_TEMPLATES: FollowUpTemplate[] = [
   {
@@ -309,37 +307,56 @@ export function saveWorkspaceSession(session: WorkspaceSession): void {
   }
 }
 
-export function resetStoredPasscodeToDefault(): string {
-  try {
-    localStorage.setItem(PASSCODE_STORAGE_KEY, DEFAULT_PASSCODE);
-  } catch {
-    // Ignore storage quota errors
-  }
+/* ------------------------------------------------------------------ */
+/* Supabase auth                                                       */
+/* ------------------------------------------------------------------ */
 
-  const currentSession = loadWorkspaceSession();
-  saveWorkspaceSession({
-    ...currentSession,
-    hasPasscode: true,
-    isLocked: false,
-    lastUnlockedAt: new Date().toISOString(),
+type AuthResult = { ok: boolean; message: string };
+
+export async function signInWithSupabase(email: string, password: string): Promise<AuthResult> {
+  if (!supabase) return { ok: false, message: 'Cloud sync is not configured.' };
+
+  const { error } = await supabase.auth.signInWithPassword({
+    email: email.trim(),
+    password,
   });
-
-  return DEFAULT_PASSCODE;
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: 'Signed in.' };
 }
 
-export async function sendSupabasePasswordReset(
-  email: string
-): Promise<{ ok: boolean; message: string }> {
+export async function signUpWithSupabase(
+  email: string,
+  password: string
+): Promise<AuthResult & { requiresEmailConfirmation: boolean }> {
+  if (!supabase) {
+    return { ok: false, message: 'Cloud sync is not configured.', requiresEmailConfirmation: false };
+  }
+
+  const { data, error } = await supabase.auth.signUp({
+    email: email.trim(),
+    password,
+  });
+  if (error) return { ok: false, message: error.message, requiresEmailConfirmation: false };
+
+  // No session returned = email confirmation is required
+  const requiresEmailConfirmation = !data.session;
+  return {
+    ok: true,
+    requiresEmailConfirmation,
+    message: requiresEmailConfirmation
+      ? 'Account created. Check your email to confirm, then sign in.'
+      : 'Account created.',
+  };
+}
+
+export async function sendSupabasePasswordReset(email: string): Promise<AuthResult> {
   const trimmedEmail = email.trim();
   if (!trimmedEmail) {
     return { ok: false, message: 'Please enter your email address first.' };
   }
 
   if (!supabase) {
-    return {
-      ok: false,
-      message: 'Cloud sync is not configured yet. Reset the local passcode instead.',
-    };
+    return { ok: false, message: 'Cloud sync is not configured.' };
   }
 
   const redirectTo =
@@ -359,4 +376,32 @@ export async function sendSupabasePasswordReset(
     ok: true,
     message: `Password reset email sent to ${trimmedEmail}.`,
   };
+}
+
+export async function updateSupabasePassword(newPassword: string): Promise<AuthResult> {
+  if (!supabase) return { ok: false, message: 'Cloud sync is not configured.' };
+
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: 'Password updated. Please sign in.' };
+}
+
+export async function getSupabaseSession() {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getSession();
+  return data.session;
+}
+
+export async function signOutSupabase(): Promise<void> {
+  if (!supabase) return;
+  await supabase.auth.signOut();
+}
+
+// Fires when the user lands from a password-reset email link
+export function onSupabasePasswordRecovery(callback: () => void): () => void {
+  if (!supabase) return () => {};
+  const { data } = supabase.auth.onAuthStateChange((event) => {
+    if (event === 'PASSWORD_RECOVERY') callback();
+  });
+  return () => data.subscription.unsubscribe();
 }
