@@ -1,185 +1,143 @@
 import React from 'react';
-import {
-  Database,
-  Plus,
-  Search,
-  Send,
-  UserPlus,
-} from 'lucide-react';
-import { getLeadReminderMeta } from '../services/crmService';
+import { CalendarClock, Phone, Plus, RotateCcw, Users } from 'lucide-react';
 import type { Lead, SmartViewId } from '../types/crm';
+import { getLeadReminderMeta, normalizeLeadStatus } from '../services/crmService';
 
 interface LeadListProps {
-  leads: Lead[];
-  selectedLeadId: string | null;
-  searchQuery: string;
-  activeView: SmartViewId;
-  isQuotaLocked: boolean;
-  sendingLeadId: string | null;
-  mobilePane: 'list' | 'detail';
-  onSearchChange: (query: string) => void;
-  onSelectLead: (leadId: string) => void;
-  onQuickSend: (lead: Lead) => void;
+  leads?: Lead[] | null;
+  selectedLeadId?: string | null;
+  onSelectLead: (id: string) => void;
+  onRestoreSamples?: () => void;
   onOpenNewLead: () => void;
-  onLoadSampleLeads: () => void;
+  searchQuery?: string;
+  activeView?: SmartViewId;
 }
 
-const VIEW_TITLES: Record<SmartViewId, string> = {
-  due_today: 'Due Today',
-  overdue: 'Overdue Follow-Ups',
-  upcoming: 'Upcoming Reminders',
-  replied: 'Replied Leads',
-  all: 'All Leads',
-  closed: 'Closed Leads',
-};
+function statusBadgeStyle(status: Lead['status']): string {
+  const normalized = normalizeLeadStatus(status);
+  if (normalized === 'Replied') return 'bg-emerald-50 text-emerald-700 border-emerald-200/70';
+  if (normalized === 'Contacted') return 'bg-blue-50 text-[#0071E3] border-blue-200/70';
+  if (normalized === 'Closed') return 'bg-[#F5F5F7] text-[#6E6E73] border-black/10';
+  return 'bg-amber-50 text-amber-800 border-amber-200/70';
+}
+
+function reminderBadgeStyle(bucket: SmartViewId): string {
+  if (bucket === 'overdue') return 'text-red-700 bg-red-50';
+  if (bucket === 'due_today') return 'text-amber-800 bg-amber-50';
+  if (bucket === 'upcoming') return 'text-[#0071E3] bg-blue-50';
+  return 'text-[#6E6E73] bg-[#F5F5F7]';
+}
 
 export function LeadList({
   leads,
   selectedLeadId,
-  searchQuery,
-  activeView,
-  isQuotaLocked,
-  sendingLeadId,
-  mobilePane,
-  onSearchChange,
   onSelectLead,
-  onQuickSend,
+  onRestoreSamples,
   onOpenNewLead,
-  onLoadSampleLeads,
+  searchQuery = '',
+  activeView = 'all',
 }: LeadListProps) {
-  return (
-    <section
-      className={`${
-        mobilePane === 'detail' ? 'hidden md:flex' : 'flex'
-      } w-full md:w-80 lg:w-96 shrink-0 bg-white rounded-2xl border border-black/10 flex-col min-h-0 overflow-hidden`}
-    >
-      <div className="p-3.5 border-b border-black/10 space-y-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold tracking-tight text-[#1D1D1F]">
-            {VIEW_TITLES[activeView]}
+  const safeLeads = Array.isArray(leads) ? leads.filter(Boolean) : [];
+
+  if (safeLeads.length === 0) {
+    const hasFilterOrSearch = Boolean(searchQuery.trim()) || activeView !== 'all';
+
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-4">
+        <div className="w-12 h-12 rounded-2xl bg-[#F5F5F7] flex items-center justify-center text-[#6E6E73]">
+          <Users className="w-6 h-6" />
+        </div>
+        <div className="space-y-1 max-w-xs">
+          <h2 className="text-sm font-semibold text-[#1D1D1F]">
+            {hasFilterOrSearch ? 'No matching leads' : 'No leads yet'}
           </h2>
-          <span className="text-xs font-medium text-[#6E6E73] tabular-nums">
-            {leads.length} {leads.length === 1 ? 'lead' : 'leads'}
-          </span>
+          <p className="text-xs text-[#6E6E73]">
+            {hasFilterOrSearch
+              ? 'Try clearing your search filter or switching to All Leads.'
+              : 'Add your first customer inquiry or load sample leads to test follow-ups.'}
+          </p>
         </div>
 
-        <div className="relative">
-          <Search className="w-3.5 h-3.5 text-[#8E8E93] absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search name, phone, or interest..."
-            className="w-full pl-8 pr-3 py-2 rounded-xl bg-[#F5F5F7] border border-transparent text-xs focus:outline-none focus:bg-white focus:border-[#007AFF] transition-colors"
-          />
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenNewLead}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#1D1D1F] text-white text-xs font-medium hover:opacity-90 transition cursor-pointer"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>New Lead</span>
+          </button>
+
+          {!hasFilterOrSearch && onRestoreSamples && (
+            <button
+              type="button"
+              onClick={onRestoreSamples}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-black/15 bg-white text-[#1D1D1F] text-xs font-medium hover:bg-[#F5F5F7] transition cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Load Samples</span>
+            </button>
+          )}
         </div>
       </div>
+    );
+  }
 
-      <div className="flex-1 overflow-y-auto p-2.5 space-y-2">
-        {leads.length === 0 ? (
-          <div className="h-full min-h-[240px] flex flex-col items-center justify-center text-center p-6 space-y-3">
-            <div className="w-10 h-10 rounded-2xl bg-[#F5F5F7] text-[#6E6E73] flex items-center justify-center">
-              <UserPlus className="w-5 h-5" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-xs font-semibold text-[#1D1D1F]">
-                No leads in this view
-              </p>
-              <p className="text-xs text-[#6E6E73]">
-                Add a new lead or load sample leads to test follow-ups.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <button
-                type="button"
-                onClick={onOpenNewLead}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#007AFF] text-white text-xs font-medium hover:bg-[#0066D6] transition-colors cursor-pointer"
+  return (
+    <div className="flex-1 overflow-y-auto divide-y divide-black/[0.05]">
+      {safeLeads.map((lead) => {
+        const isSelected = lead.id === selectedLeadId;
+        const meta = getLeadReminderMeta(lead);
+        const normalizedStatus = normalizeLeadStatus(lead.status);
+
+        return (
+          <button
+            key={lead.id}
+            type="button"
+            onClick={() => onSelectLead(lead.id)}
+            className={`w-full text-left px-4 py-3.5 transition cursor-pointer flex flex-col gap-1.5 ${
+              isSelected
+                ? 'bg-[#0071E3]/[0.07] border-l-2 border-l-[#0071E3]'
+                : 'bg-white hover:bg-[#FAFAFC]'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-[#1D1D1F] truncate">
+                {lead.name || 'Unnamed Lead'}
+              </span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[10px] font-medium border shrink-0 ${statusBadgeStyle(
+                  normalizedStatus
+                )}`}
               >
-                <Plus className="w-3.5 h-3.5" />
-                Add Lead
-              </button>
-              <button
-                type="button"
-                onClick={onLoadSampleLeads}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#F5F5F7] text-[#1D1D1F] text-xs font-medium hover:bg-black/5 transition-colors cursor-pointer"
-              >
-                <Database className="w-3.5 h-3.5" />
-                Sample Data
-              </button>
+                {normalizedStatus}
+              </span>
             </div>
-          </div>
-        ) : (
-          leads.map((lead) => {
-            const meta = getLeadReminderMeta(lead);
-            const isSelected = lead.id === selectedLeadId;
-            const isSending = sendingLeadId === lead.id;
 
-            const badgeStyle =
-              meta.bucket === 'due_today'
-                ? 'bg-[#007AFF]/10 text-[#007AFF]'
-                : meta.bucket === 'overdue'
-                  ? 'bg-[#FF3B30]/10 text-[#C62828]'
-                  : meta.bucket === 'replied'
-                    ? 'bg-[#34C759]/10 text-[#1E7E34]'
-                    : 'bg-[#F5F5F7] text-[#6E6E73]';
+            {lead.interest && (
+              <p className="text-xs text-[#1D1D1F]/80 truncate">{lead.interest}</p>
+            )}
 
-            return (
-              <div
-                key={lead.id}
-                onClick={() => onSelectLead(lead.id)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    onSelectLead(lead.id);
-                  }
-                }}
-                className={`p-3 rounded-xl border transition-all cursor-pointer ${
-                  isSelected
-                    ? 'bg-[#007AFF]/5 border-[#007AFF]/40'
-                    : 'bg-white border-black/5 hover:border-black/15 hover:bg-[#F5F5F7]/60'
-                }`}
+            <div className="flex items-center justify-between gap-2 pt-0.5 text-[11px]">
+              <span className="inline-flex items-center gap-1 text-[#6E6E73] truncate">
+                <Phone className="w-3 h-3 shrink-0" />
+                <span className="truncate">{lead.phone || 'No phone'}</span>
+              </span>
+
+              <span
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium shrink-0 ${reminderBadgeStyle(
+                  meta.bucket
+                )}`}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold text-[#1D1D1F] truncate">
-                      {lead.name}
-                    </p>
-                    <p className="text-[11px] text-[#6E6E73] truncate mt-0.5">
-                      {lead.interest}
-                    </p>
-                  </div>
-                  <span
-                    className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-medium tabular-nums ${badgeStyle}`}
-                  >
-                    {meta.label}
-                  </span>
-                </div>
-
-                <div className="mt-2.5 pt-2 border-t border-black/5 flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-mono text-[#6E6E73] truncate">
-                    {lead.phone}
-                  </span>
-
-                  <button
-                    type="button"
-                    disabled={isQuotaLocked || isSending}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onQuickSend(lead);
-                    }}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#34C759] hover:bg-[#2DB84F] disabled:opacity-40 text-white text-[11px] font-medium transition-colors cursor-pointer shrink-0"
-                  >
-                    <Send className="w-3 h-3" />
-                    <span>{isSending ? 'Sending...' : 'Follow Up'}</span>
-                  </button>
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
-    </section>
+                <CalendarClock className="w-3 h-3 shrink-0" />
+                <span>{meta.label}</span>
+              </span>
+            </div>
+          </button>
+        );
+      })}
+    </div>
   );
 }
+
+export default LeadList;
