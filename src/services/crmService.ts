@@ -15,7 +15,7 @@ const WA_SESSION_KEY = 'goodshield_crm_wa_session_v1';
 const NOTIFIED_KEY = 'goodshield_crm_notified_v1';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-export const DAILY_SEND_LIMIT = 30;
+export const DAILY_SEND_LIMIT = 45;
 
 /* ------------------------------------------------------------------ */
 /* Storage helpers                                                     */
@@ -70,14 +70,22 @@ export const FOLLOW_UP_TEMPLATES: FollowUpTemplate[] = [
   },
 ];
 
-export function generateSmartDrafts(
-  lead: Lead
-): Array<{ id: string; label: string; text: string }> {
-  return FOLLOW_UP_TEMPLATES.map((tpl) => ({
-    id: tpl.id,
-    label: tpl.name,
-    text: tpl.buildMessage(lead),
-  }));
+// Returns the same text under several field names so it works
+// with whichever one LeadInspector reads.
+export function generateSmartDrafts(lead: Lead) {
+  return FOLLOW_UP_TEMPLATES.map((tpl) => {
+    const text = tpl.buildMessage(lead);
+    return {
+      id: tpl.id,
+      label: tpl.name,
+      title: tpl.name,
+      name: tpl.name,
+      text,
+      body: text,
+      message: text,
+      content: text,
+    };
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -197,7 +205,9 @@ export function sanitizePhoneForWhatsApp(phone?: string): string {
 export function buildWhatsAppMeUrl(phone: string | undefined, message: string): string {
   const clean = sanitizePhoneForWhatsApp(phone);
   const text = encodeURIComponent(message);
-  return clean ? `https://wa.me/${clean}?text=${text}` : `https://wa.me/?text=${text}`;
+  return clean
+    ? `https://api.whatsapp.com/send?phone=${clean}&text=${text}`
+    : `https://api.whatsapp.com/send?text=${text}`;
 }
 
 function readSentLog(): number[] {
@@ -226,6 +236,10 @@ export async function sendWhatsAppFollowUp(
     throw new Error('Daily WhatsApp send limit reached.');
   }
 
+  // Never send a blank message
+  const finalMessage =
+    message?.trim() || FOLLOW_UP_TEMPLATES[0].buildMessage(lead);
+
   const now = new Date();
   writeJson(SENT_LOG_KEY, [...readSentLog(), now.getTime()]);
 
@@ -239,14 +253,14 @@ export async function sendWhatsAppFollowUp(
       {
         id: `h_${now.getTime()}_${Math.random().toString(36).slice(2, 6)}`,
         type: 'whatsapp_sent',
-        message,
+        message: finalMessage,
         templateName: options?.templateName,
         at: now.toISOString(),
       },
     ],
   };
 
-  const waMeUrl = buildWhatsAppMeUrl(lead.phone, message);
+  const waMeUrl = buildWhatsAppMeUrl(lead.phone, finalMessage);
   if (typeof window !== 'undefined') {
     window.open(waMeUrl, '_blank', 'noopener,noreferrer');
   }
