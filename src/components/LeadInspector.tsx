@@ -548,3 +548,143 @@ export function LeadInspector({
             >
               <Plus className="w-4 h-4" />
             </button>
+
+            <input
+              ref={mediaInputRef}
+              type="file"
+              accept="image/*,video/*"
+              multiple
+              onChange={handleMediaFileChange}
+              className="hidden"
+            />
+
+            <textarea
+              rows={3}
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="Write your WhatsApp follow-up message or click + to attach a photo/video..."
+              className="flex-1 px-3.5 py-2.5 rounded-xl bg-white border border-black/10 text-xs leading-relaxed focus:outline-none focus:border-[#007AFF] transition-colors"
+            />
+          </div>
+
+          {mediaError && (
+            <p className="text-[11px] text-[#FF3B30]">{mediaError}</p>
+          )}
+
+          {/* Selected Photo / Video Previews */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {attachments.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center gap-2 p-1.5 pr-2 rounded-xl bg-white border border-black/10"
+                >
+                  {item.type === 'image' ? (
+                    <img
+                      src={item.previewUrl}
+                      alt={item.name}
+                      className="w-10 h-10 rounded-lg object-cover bg-[#F5F5F7]"
+                    />
+                  ) : (
+                    <video
+                      src={item.previewUrl}
+                      className="w-12 h-10 rounded-lg object-cover bg-black"
+                      muted
+                      playsInline
+                    />
+                  )}
+                  <div className="min-w-0 max-w-[140px]">
+                    <p className="text-[11px] font-medium text-[#1D1D1F] truncate flex items-center gap-1">
+                      {item.type === 'image' ? (
+                        <ImageIcon className="w-3 h-3 text-[#007AFF] shrink-0" />
+                      ) : (
+                        <FileVideo className="w-3 h-3 text-[#007AFF] shrink-0" />
+                      )}
+                      <span className="truncate">{item.name}</span>
+                    </p>
+                    <p className="text-[10px] text-[#6E6E73] tabular-nums">
+                      {(item.sizeBytes / (1024 * 1024)).toFixed(1)} MB
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveAttachment(item.id)}
+                    aria-label={`Remove ${item.name}`}
+                    className="p-1 rounded-lg text-[#8E8E93] hover:text-[#FF3B30] hover:bg-[#FF3B30]/10 cursor-pointer"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <a
+              href={directWaUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-[#6E6E73] hover:text-[#1D1D1F]"
+            >
+              Preview wa.me link
+              <ExternalLink className="w-3 h-3" />
+            </a>
+
+            <button
+              type="submit"
+              disabled={isQuotaLocked || isSending || !composedMessage}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#34C759] hover:bg-[#2DB84F] disabled:opacity-40 text-white text-xs font-semibold transition-colors cursor-pointer"
+            >
+              <Send className="w-3.5 h-3.5" />
+              {isQuotaLocked
+                ? '24h Quota Reached (30/30)'
+                : isSending
+                  ? 'Sending...'
+                  : 'Send & Schedule Next Reminder'}
+            </button>
+          </div>
+        </form>
+
+        {/* Outreach History */}
+        <div className="space-y-2.5">
+          <h3 className="text-xs font-semibold text-[#1D1D1F] flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5 text-[#6E6E73]" />
+            Follow-Up History ({lead.history?.length || 0})
+          </h3>
+
+          {!lead.history || lead.history.length === 0 ? (
+            <p className="text-xs text-[#6E6E73] bg-[#F5F5F7] rounded-xl p-3">
+              No messages logged yet. Sending a follow-up automatically records
+              it here and schedules the next reminder.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {lead.history.map((item: any) => {
+                const timestamp = item.sentAt || item.at;
+                return (
+                  <div
+                    key={item.id}
+                    className="p-3 rounded-xl bg-[#F5F5F7] border border-black/5 space-y-1"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-[#6E6E73]">
+                      <span className="inline-flex items-center gap-1 font-medium text-[#1D1D1F]">
+                        <CheckCircle2 className="w-3 h-3 text-[#34C759]" />
+                        {item.templateName || 'Follow-Up Sent'}
+                      </span>
+                      <span className="tabular-nums">
+                        {timestamp ? new Date(timestamp).toLocaleString() : ''}
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#1D1D1F] leading-relaxed">
+                      {item.message}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
