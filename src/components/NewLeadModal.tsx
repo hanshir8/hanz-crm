@@ -1,13 +1,31 @@
-import React, { useState } from 'react';
-import { UserPlus, X } from 'lucide-react';
-import { computeNextReminderDate } from '../services/crmService';
-import type { Lead, ReminderCadence } from '../types/crm';
+import React, { useEffect, useState } from 'react';
+import { Plus, X } from 'lucide-react';
+import type { LeadStatus, ReminderCadence } from '../types/crm';
+
+interface NewLeadInput {
+  name: string;
+  phone: string;
+  interest: string;
+  notes?: string;
+  status?: LeadStatus;
+  reminderDays?: ReminderCadence;
+}
 
 interface NewLeadModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreateLead: (lead: Lead) => void;
+  onCreateLead: (input: NewLeadInput) => Promise<void> | void;
 }
+
+const CADENCE_CHOICES: Array<{ label: string; value: ReminderCadence }> = [
+  { label: 'Every 2 days', value: 2 },
+  { label: 'Every 3 days', value: 3 },
+  { label: 'Every 4 days', value: 4 },
+  { label: 'Every 7 days', value: 7 },
+  { label: 'Off', value: 0 },
+];
+
+const STATUS_CHOICES: LeadStatus[] = ['New', 'Contacted', 'Replied', 'Closed'];
 
 export function NewLeadModal({
   isOpen,
@@ -17,161 +35,187 @@ export function NewLeadModal({
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [interest, setInterest] = useState('');
-  const [reminderDays, setReminderDays] = useState<ReminderCadence>(3);
   const [notes, setNotes] = useState('');
+  const [status, setStatus] = useState<LeadStatus>('New');
+  const [reminderDays, setReminderDays] = useState<ReminderCadence>(3);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  if (!isOpen) return null;
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || !phone.trim()) return;
-
-    const now = new Date();
-    const newLead: Lead = {
-      id: `lead_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      name: name.trim(),
-      phone: phone.trim(),
-      interest: interest.trim() || 'General Inquiry',
-      status: 'New',
-      reminderDays,
-      lastContactedAt: null,
-      nextReminderAt: computeNextReminderDate(reminderDays, now),
-      notes: notes.trim(),
-      history: [],
-      createdAt: now.toISOString(),
-    };
-
-    onCreateLead(newLead);
+  useEffect(() => {
+    if (!isOpen) return;
     setName('');
     setPhone('');
     setInterest('');
-    setReminderDays(3);
     setNotes('');
-    onClose();
+    setStatus('New');
+    setReminderDays(3);
+    setErrorMsg('');
+    setIsSubmitting(false);
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) {
+      setErrorMsg('Please enter the lead name.');
+      return;
+    }
+
+    setErrorMsg('');
+    setIsSubmitting(true);
+    try {
+      await onCreateLead({
+        name: name.trim(),
+        phone: phone.trim(),
+        interest: interest.trim(),
+        notes: notes.trim(),
+        status,
+        reminderDays,
+      });
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not save lead.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
-        className="fixed inset-0 bg-black/30 backdrop-blur-[1px]"
+        className="fixed inset-0 bg-black/35 backdrop-blur-[2px]"
         onClick={onClose}
       />
-      <div className="relative z-10 w-full max-w-md bg-white rounded-3xl border border-black/10 shadow-xl p-6 space-y-5">
+
+      <div className="relative z-10 w-full max-w-md rounded-3xl bg-white border border-black/[0.08] shadow-xl p-6 space-y-5">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-[#007AFF]/10 text-[#007AFF] flex items-center justify-center">
-              <UserPlus className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-base font-semibold text-[#1D1D1F]">
-                Add New Lead
-              </h2>
-              <p className="text-xs text-[#6E6E73]">
-                Schedule automatic 3–4 day WhatsApp follow-ups
-              </p>
-            </div>
+          <div>
+            <h2 className="text-base font-semibold tracking-tight text-[#1D1D1F]">
+              Add New Lead
+            </h2>
+            <p className="text-xs text-[#6E6E73]">
+              Create a lead and schedule automatic follow-up reminders.
+            </p>
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close modal"
-            className="p-1.5 rounded-xl text-[#8E8E93] hover:text-[#1D1D1F] hover:bg-[#F5F5F7] cursor-pointer"
+            className="p-1.5 rounded-xl text-[#6E6E73] hover:text-[#1D1D1F] hover:bg-[#F5F5F7] transition cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3.5">
-          <div className="space-y-1">
-            <label className="block text-xs font-medium text-[#6E6E73]">
-              Customer Name *
+          <div>
+            <label className="block text-xs font-medium text-[#1D1D1F] mb-1">
+              Name *
             </label>
             <input
               type="text"
               required
-              autoFocus
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Sarah Lim"
-              className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/10 text-sm focus:outline-none focus:bg-white focus:border-[#007AFF]"
+              placeholder="e.g., Aiman Hakim"
+              className="w-full px-3.5 py-2 rounded-xl border border-black/15 bg-[#FAFAFC] text-sm focus:outline-none focus:border-[#0071E3]"
             />
           </div>
 
-          <div className="space-y-1">
-            <label className="block text-xs font-medium text-[#6E6E73]">
-              WhatsApp Phone Number *
-            </label>
-            <input
-              type="tel"
-              required
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="e.g. +60123456789"
-              className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/10 text-sm font-mono focus:outline-none focus:bg-white focus:border-[#007AFF]"
-            />
-          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-[#1D1D1F] mb-1">
+                WhatsApp / Phone
+              </label>
+              <input
+                type="text"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="+60123456789"
+                className="w-full px-3.5 py-2 rounded-xl border border-black/15 bg-[#FAFAFC] text-sm focus:outline-none focus:border-[#0071E3]"
+              />
+            </div>
 
-          <div className="space-y-1">
-            <label className="block text-xs font-medium text-[#6E6E73]">
-              Interest / Package
-            </label>
-            <input
-              type="text"
-              value={interest}
-              onChange={(e) => setInterest(e.target.value)}
-              placeholder="e.g. Tiggo 7 PHEV Test Drive"
-              className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/10 text-sm focus:outline-none focus:bg-white focus:border-[#007AFF]"
-            />
-          </div>
-
-          <div className="space-y-1">
-            <label className="block text-xs font-medium text-[#6E6E73]">
-              First Follow-Up Reminder
-            </label>
-            <div className="grid grid-cols-4 gap-1.5">
-              {([3, 4, 7, 0] as ReminderCadence[]).map((days) => (
-                <button
-                  key={days}
-                  type="button"
-                  onClick={() => setReminderDays(days)}
-                  className={`py-2 rounded-xl text-xs font-medium border transition-colors cursor-pointer ${
-                    reminderDays === days
-                      ? 'bg-[#007AFF] border-[#007AFF] text-white'
-                      : 'bg-[#F5F5F7] border-transparent text-[#1D1D1F] hover:bg-black/5'
-                  }`}
-                >
-                  {days === 0 ? 'None' : `${days} Days`}
-                </button>
-              ))}
+            <div>
+              <label className="block text-xs font-medium text-[#1D1D1F] mb-1">
+                Vehicle / Interest
+              </label>
+              <input
+                type="text"
+                value={interest}
+                onChange={(e) => setInterest(e.target.value)}
+                placeholder="e.g., Tiggo 7 PHEV"
+                className="w-full px-3.5 py-2 rounded-xl border border-black/15 bg-[#FAFAFC] text-sm focus:outline-none focus:border-[#0071E3]"
+              />
             </div>
           </div>
 
-          <div className="space-y-1">
-            <label className="block text-xs font-medium text-[#6E6E73]">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-[#1D1D1F] mb-1">
+                Initial Status
+              </label>
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value as LeadStatus)}
+                className="w-full px-3 py-2 rounded-xl border border-black/15 bg-[#FAFAFC] text-sm focus:outline-none focus:border-[#0071E3] cursor-pointer"
+              >
+                {STATUS_CHOICES.map((st) => (
+                  <option key={st} value={st}>
+                    {st}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-[#1D1D1F] mb-1">
+                Follow-Up Cadence
+              </label>
+              <select
+                value={reminderDays}
+                onChange={(e) => setReminderDays(Number(e.target.value) as ReminderCadence)}
+                className="w-full px-3 py-2 rounded-xl border border-black/15 bg-[#FAFAFC] text-sm focus:outline-none focus:border-[#0071E3] cursor-pointer"
+              >
+                {CADENCE_CHOICES.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-[#1D1D1F] mb-1">
               Notes
             </label>
             <textarea
               rows={2}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Optional context..."
-              className="w-full px-3.5 py-2 rounded-xl bg-[#F5F5F7] border border-black/10 text-xs focus:outline-none focus:bg-white focus:border-[#007AFF] resize-none"
+              placeholder="Optional context or inquiry notes..."
+              className="w-full px-3.5 py-2 rounded-xl border border-black/15 bg-[#FAFAFC] text-sm focus:outline-none focus:border-[#0071E3]"
             />
           </div>
 
-          <div className="pt-2 flex items-center justify-end gap-2">
+          {errorMsg && <p className="text-xs text-red-600">{errorMsg}</p>}
+
+          <div className="flex items-center justify-end gap-2 pt-2">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl bg-[#F5F5F7] hover:bg-black/5 text-xs font-medium text-[#1D1D1F] cursor-pointer"
+              className="px-4 py-2 rounded-xl border border-black/12 text-xs sm:text-sm font-medium text-[#1D1D1F] hover:bg-[#F5F5F7] transition cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-2 rounded-xl bg-[#007AFF] hover:bg-[#0066D6] text-white text-xs font-semibold cursor-pointer"
+              disabled={isSubmitting}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#1D1D1F] text-white text-xs sm:text-sm font-medium hover:opacity-90 disabled:opacity-50 transition cursor-pointer"
             >
-              Save Lead
+              <Plus className="w-4 h-4" />
+              <span>{isSubmitting ? 'Saving...' : 'Save Lead'}</span>
             </button>
           </div>
         </form>
@@ -179,3 +223,5 @@ export function NewLeadModal({
     </div>
   );
 }
+
+export default NewLeadModal;
