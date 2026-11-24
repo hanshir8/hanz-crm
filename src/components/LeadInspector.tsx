@@ -2,14 +2,17 @@ import React, { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   CalendarClock,
+  Check,
   CheckCircle2,
   Clock,
   ExternalLink,
   MessageSquare,
+  Pencil,
   Phone,
   Send,
   Sparkles,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   buildWhatsAppMeUrl,
@@ -47,6 +50,28 @@ const CADENCE_OPTIONS: Array<{ value: ReminderCadence; label: string }> = [
   { value: 0, label: 'Off' },
 ];
 
+function getTemplateText(tpl: any, lead: Lead): string {
+  if (!tpl) {
+    const firstName = lead.name?.trim().split(/\s+/)[0] || 'there';
+    const topic = lead.interest?.trim() || 'your inquiry';
+    return `Hi ${firstName}, just following up on ${topic} — let me know if you have any questions!`;
+  }
+  if (typeof tpl.buildMessage === 'function') {
+    return tpl.buildMessage(lead);
+  }
+  const raw = tpl.body ?? tpl.message ?? '';
+  const firstName = lead.name?.trim().split(/\s+/)[0] || 'there';
+  const topic = lead.interest?.trim() || 'your inquiry';
+  return String(raw)
+    .replace(/\{name\}/gi, firstName)
+    .replace(/\{interest\}/gi, topic)
+    .replace(/\{vehicle\}/gi, topic);
+}
+
+function getTemplateTitle(tpl: any, index: number): string {
+  return tpl?.name || tpl?.title || `Template ${index + 1}`;
+}
+
 export function LeadInspector({
   lead,
   isQuotaLocked,
@@ -64,18 +89,29 @@ export function LeadInspector({
   const [smartDrafts, setSmartDrafts] = useState<SmartDraftOption[]>([]);
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(false);
 
+  // Edit mode state for Name, Phone, and Interest
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editInterest, setEditInterest] = useState('');
+
   useEffect(() => {
+    setIsEditingProfile(false);
+    setSmartDrafts([]);
+
     if (!lead) {
       setMessage('');
       setSelectedTemplateName(undefined);
-      setSmartDrafts([]);
       return;
     }
 
-    const defaultTpl = FOLLOW_UP_TEMPLATES[0];
-    setMessage(defaultTpl.buildMessage(lead));
-    setSelectedTemplateName(defaultTpl.name);
-    setSmartDrafts([]);
+    setEditName(lead.name ?? '');
+    setEditPhone(lead.phone ?? '');
+    setEditInterest(lead.interest ?? '');
+
+    const defaultTpl = FOLLOW_UP_TEMPLATES?.[0];
+    setMessage(getTemplateText(defaultTpl, lead));
+    setSelectedTemplateName(defaultTpl ? getTemplateTitle(defaultTpl, 0) : undefined);
   }, [lead?.id]);
 
   if (!lead) {
@@ -101,14 +137,42 @@ export function LeadInspector({
     );
   }
 
+  const handleSaveProfile = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedName = editName.trim();
+    if (!trimmedName) return;
+
+    const updatedLead: Lead = {
+      ...lead,
+      name: trimmedName,
+      phone: editPhone.trim(),
+      interest: editInterest.trim(),
+    };
+
+    onUpdateLead(updatedLead);
+    setIsEditingProfile(false);
+  };
+
+  const handleCancelProfileEdit = () => {
+    setEditName(lead.name ?? '');
+    setEditPhone(lead.phone ?? '');
+    setEditInterest(lead.interest ?? '');
+    setIsEditingProfile(false);
+  };
+
   const meta = getLeadReminderMeta(lead);
-  const directWaUrl = buildWhatsAppMeUrl(lead.phone, message);
+  const directWaUrl = buildWhatsAppMeUrl(editPhone || lead.phone, message);
 
   const handleGenerateSmartDrafts = async () => {
     setIsLoadingDrafts(true);
     try {
       const drafts = await generateSmartDrafts(lead);
-      setSmartDrafts(drafts);
+      const normalized = (Array.isArray(drafts) ? drafts : []).map((d: any, idx: number) => ({
+        id: d.id ?? `draft-${idx}`,
+        label: d.label ?? d.title ?? `Draft ${idx + 1}`,
+        message: d.message ?? d.text ?? d.body ?? '',
+      }));
+      setSmartDrafts(normalized);
     } finally {
       setIsLoadingDrafts(false);
     }
@@ -127,44 +191,109 @@ export function LeadInspector({
       } flex-1 bg-white rounded-2xl border border-black/10 flex-col min-h-0 overflow-hidden`}
     >
       {/* Top Bar */}
-      <div className="p-4 border-b border-black/10 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5 min-w-0">
+      <div className="p-4 border-b border-black/10 flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2.5 min-w-0 flex-1">
           <button
             type="button"
             onClick={onBackToList}
             aria-label="Back to leads"
-            className="md:hidden p-1.5 rounded-xl bg-[#F5F5F7] text-[#1D1D1F] cursor-pointer"
+            className="md:hidden p-1.5 rounded-xl bg-[#F5F5F7] text-[#1D1D1F] cursor-pointer mt-0.5"
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
 
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 className="text-base font-semibold tracking-tight text-[#1D1D1F] truncate">
-                {lead.name}
-              </h2>
-              <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-[#007AFF]/10 text-[#007AFF] shrink-0">
-                {meta.label}
-              </span>
+          {isEditingProfile ? (
+            <form onSubmit={handleSaveProfile} className="flex-1 space-y-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Lead name"
+                  required
+                  className="px-2.5 py-1.5 rounded-lg bg-[#F5F5F7] border border-[#007AFF]/40 text-xs font-medium text-[#1D1D1F] focus:outline-none focus:bg-white focus:border-[#007AFF]"
+                />
+                <input
+                  type="text"
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                  placeholder="Phone (e.g. 60123456789)"
+                  className="px-2.5 py-1.5 rounded-lg bg-[#F5F5F7] border border-[#007AFF]/40 font-mono text-xs text-[#1D1D1F] focus:outline-none focus:bg-white focus:border-[#007AFF]"
+                />
+                <input
+                  type="text"
+                  value={editInterest}
+                  onChange={(e) => setEditInterest(e.target.value)}
+                  placeholder="Interest / model"
+                  className="px-2.5 py-1.5 rounded-lg bg-[#F5F5F7] border border-[#007AFF]/40 text-xs text-[#1D1D1F] focus:outline-none focus:bg-white focus:border-[#007AFF]"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#007AFF] text-white text-xs font-medium hover:bg-[#0066D6] cursor-pointer"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  Save Details
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelProfileEdit}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#F5F5F7] text-[#6E6E73] text-xs font-medium hover:text-[#1D1D1F] cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold tracking-tight text-[#1D1D1F] truncate">
+                  {lead.name}
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-[#007AFF]/10 text-[#007AFF] shrink-0">
+                  {meta.label}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-3 mt-0.5 text-xs text-[#6E6E73]">
+                <span className="inline-flex items-center gap-1 font-mono">
+                  <Phone className="w-3 h-3" />
+                  {lead.phone || 'No phone'}
+                </span>
+                <span className="truncate">• {lead.interest || 'No interest set'}</span>
+              </div>
             </div>
-            <div className="flex items-center gap-3 mt-0.5 text-xs text-[#6E6E73]">
-              <span className="inline-flex items-center gap-1 font-mono">
-                <Phone className="w-3 h-3" />
-                {lead.phone}
-              </span>
-              <span className="truncate">• {lead.interest}</span>
-            </div>
-          </div>
+          )}
         </div>
 
-        <button
-          type="button"
-          onClick={() => onDeleteLead(lead.id)}
-          title="Delete lead"
-          className="p-2 rounded-xl text-[#8E8E93] hover:text-[#FF3B30] hover:bg-[#FF3B30]/10 transition-colors cursor-pointer shrink-0"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          {!isEditingProfile && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditName(lead.name ?? '');
+                setEditPhone(lead.phone ?? '');
+                setEditInterest(lead.interest ?? '');
+                setIsEditingProfile(true);
+              }}
+              title="Edit lead details"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium text-[#1D1D1F] bg-[#F5F5F7] hover:bg-black/10 transition-colors cursor-pointer"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              <span>Edit</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => onDeleteLead(lead.id)}
+            title="Delete lead"
+            className="p-2 rounded-xl text-[#8E8E93] hover:text-[#FF3B30] hover:bg-[#FF3B30]/10 transition-colors cursor-pointer"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Body */}
@@ -230,7 +359,7 @@ export function LeadInspector({
           <textarea
             id="lead-notes"
             rows={2}
-            value={lead.notes}
+            value={lead.notes ?? ''}
             onChange={(e) => onUpdateLead({ ...lead, notes: e.target.value })}
             placeholder="Add car model, budget, trade-in details, or preferred follow-up timing..."
             className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-transparent text-xs focus:outline-none focus:bg-white focus:border-[#007AFF] transition-colors resize-none"
@@ -260,23 +389,26 @@ export function LeadInspector({
 
           {/* Preset Templates */}
           <div className="flex flex-wrap gap-1.5">
-            {FOLLOW_UP_TEMPLATES.map((tpl) => (
-              <button
-                key={tpl.id}
-                type="button"
-                onClick={() => {
-                  setMessage(tpl.buildMessage(lead));
-                  setSelectedTemplateName(tpl.name);
-                }}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer ${
-                  selectedTemplateName === tpl.name
-                    ? 'bg-[#007AFF]/10 border-[#007AFF]/30 text-[#007AFF]'
-                    : 'bg-white border-black/10 text-[#6E6E73] hover:text-[#1D1D1F]'
-                }`}
-              >
-                {tpl.name}
-              </button>
-            ))}
+            {(FOLLOW_UP_TEMPLATES ?? []).map((tpl, idx) => {
+              const title = getTemplateTitle(tpl, idx);
+              return (
+                <button
+                  key={tpl.id ?? title}
+                  type="button"
+                  onClick={() => {
+                    setMessage(getTemplateText(tpl, lead));
+                    setSelectedTemplateName(title);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer ${
+                    selectedTemplateName === title
+                      ? 'bg-[#007AFF]/10 border-[#007AFF]/30 text-[#007AFF]'
+                      : 'bg-white border-black/10 text-[#6E6E73] hover:text-[#1D1D1F]'
+                  }`}
+                >
+                  {title}
+                </button>
+              );
+            })}
           </div>
 
           {/* Smart Draft Chips */}
