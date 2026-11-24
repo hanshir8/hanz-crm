@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   CalendarClock,
@@ -6,9 +6,12 @@ import {
   CheckCircle2,
   Clock,
   ExternalLink,
+  FileVideo,
+  Image as ImageIcon,
   MessageSquare,
   Pencil,
   Phone,
+  Plus,
   Send,
   Sparkles,
   Trash2,
@@ -42,6 +45,14 @@ interface LeadInspectorProps {
   ) => Promise<void>;
 }
 
+interface AttachedMediaItem {
+  id: string;
+  name: string;
+  type: 'image' | 'video';
+  sizeBytes: number;
+  previewUrl: string;
+}
+
 const STATUS_OPTIONS: LeadStatus[] = ['New', 'Contacted', 'Replied', 'Closed'];
 const CADENCE_OPTIONS: Array<{ value: ReminderCadence; label: string }> = [
   { value: 3, label: 'Every 3 days' },
@@ -49,6 +60,8 @@ const CADENCE_OPTIONS: Array<{ value: ReminderCadence; label: string }> = [
   { value: 7, label: 'Every 7 days' },
   { value: 0, label: 'Off' },
 ];
+
+const MAX_MEDIA_BYTES = 25 * 1024 * 1024; // 25 MB per file safety limit
 
 function getTemplateText(tpl: any, lead: Lead): string {
   if (!tpl) {
@@ -95,9 +108,27 @@ export function LeadInspector({
   const [editPhone, setEditPhone] = useState('');
   const [editInterest, setEditInterest] = useState('');
 
+  // Photo / Video attachment state from PC file picker
+  const [attachments, setAttachments] = useState<AttachedMediaItem[]>([]);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const mediaInputRef = useRef<HTMLInputElement | null>(null);
+
+  const clearAttachments = (items: AttachedMediaItem[]) => {
+    items.forEach((item) => {
+      if (item.previewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+    });
+  };
+
   useEffect(() => {
     setIsEditingProfile(false);
     setSmartDrafts([]);
+    setMediaError(null);
+    setAttachments((prev) => {
+      clearAttachments(prev);
+      return [];
+    });
 
     if (!lead) {
       setMessage('');
@@ -113,6 +144,12 @@ export function LeadInspector({
     setMessage(getTemplateText(defaultTpl, lead));
     setSelectedTemplateName(defaultTpl ? getTemplateTitle(defaultTpl, 0) : undefined);
   }, [lead?.id]);
+
+  useEffect(() => {
+    return () => {
+      clearAttachments(attachments);
+    };
+  }, [attachments]);
 
   if (!lead) {
     return (
@@ -160,8 +197,64 @@ export function LeadInspector({
     setIsEditingProfile(false);
   };
 
+  const handleOpenMediaPicker = () => {
+    setMediaError(null);
+    mediaInputRef.current?.click();
+  };
+
+  const handleMediaFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
+
+    const added: AttachedMediaItem[] = [];
+    for (const file of files) {
+      const isImage = file.type.startsWith('image/');
+      const isVideo = file.type.startsWith('video/');
+      if (!isImage && !isVideo) {
+        setMediaError('Only image and video files are supported.');
+        continue;
+      }
+      if (file.size > MAX_MEDIA_BYTES) {
+        setMediaError(`"${file.name}" exceeds the 25 MB limit.`);
+        continue;
+      }
+      added.push({
+        id: `media_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        name: file.name,
+        type: isImage ? 'image' : 'video',
+        sizeBytes: file.size,
+        previewUrl: URL.createObjectURL(file),
+      });
+    }
+
+    if (added.length > 0) {
+      setAttachments((prev) => [...prev, ...added]);
+    }
+
+    // Reset input so choosing the same file again still triggers onChange
+    e.target.value = '';
+  };
+
+  const handleRemoveAttachment = (id: string) => {
+    setAttachments((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (target?.previewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+      return prev.filter((item) => item.id !== id);
+    });
+  };
+
+  const buildMessageWithMedia = (baseText: string) => {
+    const trimmed = baseText.trim();
+    if (attachments.length === 0) return trimmed;
+    const names = attachments.map((a) => a.name).join(', ');
+    return trimmed ? `${trimmed}\n[Attached: ${names}]` : `[Attached: ${names}]`;
+  };
+
   const meta = getLeadReminderMeta(lead);
-  const directWaUrl = buildWhatsAppMeUrl(editPhone || lead.phone, message);
+  const composedMessage = buildMessageWithMedia(message);
+  const directWaUrl = buildWhatsAppMeUrl(editPhone || lead.phone, composedMessage);
 
   const handleGenerateSmartDrafts = async () => {
     setIsLoadingDrafts(true);
@@ -180,8 +273,13 @@ export function LeadInspector({
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!message.trim() || isQuotaLocked || isSending) return;
-    await onSendFollowUp(lead, message, selectedTemplateName);
+    if (!composedMessage || isQuotaLocked || isSending) return;
+    await onSendFollowUp(lead, composedMessage, selectedTemplateName);
+    setAttachments((prev) => {
+      clearAttachments(prev);
+      return [];
+    });
+    setMediaError(null);
   };
 
   return (
@@ -435,13 +533,87 @@ export function LeadInspector({
             </div>
           )}
 
-          <textarea
-            rows={3}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder="Write your WhatsApp follow-up message..."
-            className="w-full px-3.5 py-2.5 rounded-xl bg-white border border-black/10 text-xs leading-relaxed focus:outline-none focus:border-[#007AFF] transition-colors"
-          />
+          {/* Text Box + Plus Button for Photo/Video from PC */}
+          <div className="flex items-start gap-2">
+            <button
+              type="button"
+              onClick={handleOpenMediaPicker}
+              title="Add photo or video from PC"
+              aria-label="Add photo or video from PC"
+              className="w-9 h-9 rounded-xl bg-white border border-black/10 hover:bg-[#F5F5F7] text-[#007AFF] flex items-center justify-center shrink-0 transition-colors cursor-pointer mt-0.5"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+
+            <input
+              ref={mediaInputRef}
+              type="file"
+              accept="image/*,video/*"
+              multiple
+              onChange={handleMediaFileChange}
+              className="hidden"
+            />
+
+            <textarea
+              rows={3}
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="Write your WhatsApp follow-up message or click + to attach a photo/video..."
+              className="flex-1 px-3.5 py-2.5 rounded-xl bg-white border border-black/10 text-xs leading-relaxed focus:outline-none focus:border-[#007AFF] transition-colors"
+            />
+          </div>
+
+          {mediaError && (
+            <p className="text-[11px] text-[#FF3B30]">{mediaError}</p>
+          )}
+
+          {/* Selected Photo / Video Previews */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {attachments.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center gap-2 p-1.5 pr-2 rounded-xl bg-white border border-black/10"
+                >
+                  {item.type === 'image' ? (
+                    <img
+                      src={item.previewUrl}
+                      alt={item.name}
+                      className="w-10 h-10 rounded-lg object-cover bg-[#F5F5F7]"
+                    />
+                  ) : (
+                    <video
+                      src={item.previewUrl}
+                      className="w-12 h-10 rounded-lg object-cover bg-black"
+                      muted
+                      playsInline
+                    />
+                  )}
+                  <div className="min-w-0 max-w-[140px]">
+                    <p className="text-[11px] font-medium text-[#1D1D1F] truncate flex items-center gap-1">
+                      {item.type === 'image' ? (
+                        <ImageIcon className="w-3 h-3 text-[#007AFF] shrink-0" />
+                      ) : (
+                        <FileVideo className="w-3 h-3 text-[#007AFF] shrink-0" />
+                      )}
+                      <span className="truncate">{item.name}</span>
+                    </p>
+                    <p className="text-[10px] text-[#6E6E73] tabular-nums">
+                      {(item.sizeBytes / (1024 * 1024)).toFixed(1)} MB
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveAttachment(item.id)}
+                    aria-label={`Remove ${item.name}`}
+                    className="p-1 rounded-lg text-[#8E8E93] hover:text-[#FF3B30] hover:bg-[#FF3B30]/10 cursor-pointer"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <a
@@ -456,7 +628,7 @@ export function LeadInspector({
 
             <button
               type="submit"
-              disabled={isQuotaLocked || isSending || !message.trim()}
+              disabled={isQuotaLocked || isSending || !composedMessage}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#34C759] hover:bg-[#2DB84F] disabled:opacity-40 text-white text-xs font-semibold transition-colors cursor-pointer"
             >
               <Send className="w-3.5 h-3.5" />
