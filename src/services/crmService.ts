@@ -70,6 +70,16 @@ export const FOLLOW_UP_TEMPLATES: FollowUpTemplate[] = [
   },
 ];
 
+export function generateSmartDrafts(
+  lead: Lead
+): Array<{ id: string; label: string; text: string }> {
+  return FOLLOW_UP_TEMPLATES.map((tpl) => ({
+    id: tpl.id,
+    label: tpl.name,
+    text: tpl.buildMessage(lead),
+  }));
+}
+
 /* ------------------------------------------------------------------ */
 /* Leads                                                               */
 /* ------------------------------------------------------------------ */
