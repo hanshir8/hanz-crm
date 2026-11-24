@@ -263,7 +263,7 @@ function CrmWorkspaceApp() {
     setQuota(latestQuota);
 
     if (latestQuota.isLocked) {
-      pushToast('warning', 'Daily 24h WhatsApp limit reached (30/30)', {
+      pushToast('warning', `Daily 24h WhatsApp limit reached (${latestQuota.limit}/${latestQuota.limit})`, {
         description:
           'GOODSHIELD paused sending to protect your number from spam flags.',
       });
