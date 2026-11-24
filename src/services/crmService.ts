@@ -24,6 +24,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const DAILY_SEND_LIMIT = 45;
 export const DAILY_QUOTA_LIMIT = DAILY_SEND_LIMIT;
 
+const DEFAULT_WA_SESSION: WhatsAppSessionState = {
+  status: 'qr',
+};
+
 /* ------------------------------------------------------------------ */
 /* Storage & Passcode helpers                                          */
 /* ------------------------------------------------------------------ */
@@ -31,7 +35,9 @@ export const DAILY_QUOTA_LIMIT = DAILY_SEND_LIMIT;
 function readJson<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
+    if (!raw || raw === 'undefined' || raw === 'null') return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed !== null && parsed !== undefined ? (parsed as T) : fallback;
   } catch {
     return fallback;
   }
@@ -203,12 +209,12 @@ function buildSampleLeads(): Lead[] {
 
 export function loadLeads(): Lead[] {
   const stored = readJson<Lead[] | null>(LEADS_KEY, null);
-  if (Array.isArray(stored)) return stored;
+  if (Array.isArray(stored)) return stored.filter(Boolean);
   return [];
 }
 
 export function saveLeads(leads: Lead[]): void {
-  writeJson(LEADS_KEY, leads);
+  writeJson(LEADS_KEY, Array.isArray(leads) ? leads.filter(Boolean) : []);
 }
 
 export function loadCachedLeads(): Lead[] {
@@ -250,7 +256,7 @@ export async function fetchLeadsFromSupabase(userId?: string): Promise<Lead[]> {
   }
 
   const localById = new Map(loadLeads().map((item) => [item.id, item]));
-  const mapped: Lead[] = (data ?? []).map((row: any) => {
+  const mapped: Lead[] = (data ?? []).filter(Boolean).map((row: any) => {
     const local = localById.get(String(row.id));
     return {
       id: String(row.id),
@@ -262,7 +268,7 @@ export async function fetchLeadsFromSupabase(userId?: string): Promise<Lead[]> {
       reminderDays: sqlCadenceToReminderDays(row.cadence),
       lastContactedAt: local?.lastContactedAt ?? null,
       nextReminderAt: row.next_follow_up_at ?? local?.nextReminderAt ?? null,
-      history: local?.history ?? [],
+      history: Array.isArray(local?.history) ? local.history : [],
       createdAt: row.created_at ?? local?.createdAt ?? new Date().toISOString(),
     };
   });
@@ -359,7 +365,7 @@ export function getLeadReminderMeta(lead: Lead): {
   isOverdue: boolean;
   sortPriority: number;
 } {
-  if (lead.status === 'Closed') {
+  if (!lead || lead.status === 'Closed') {
     return { bucket: 'closed', label: 'Closed', isDueToday: false, isOverdue: false, sortPriority: 5 };
   }
   if (lead.status === 'Replied') {
@@ -388,6 +394,7 @@ export function getLeadReminderMeta(lead: Lead): {
 }
 
 export function matchesSmartView(lead: Lead, view: SmartViewId): boolean {
+  if (!lead) return false;
   if (view === 'all') return true;
   if (view === 'closed') return lead.status === 'Closed';
   if (view === 'replied') return lead.status === 'Replied';
@@ -422,7 +429,9 @@ export function buildWhatsAppMeUrl(phone: string | undefined, message: string): 
 
 function readSentLog(): number[] {
   const cutoff = Date.now() - DAY_MS;
-  return readJson<number[]>(SENT_LOG_KEY, []).filter((t) => t > cutoff);
+  const raw = readJson<unknown>(SENT_LOG_KEY, []);
+  if (!Array.isArray(raw)) return [];
+  return raw.map(Number).filter((t) => Number.isFinite(t) && t > cutoff);
 }
 
 export function getQuotaStatus(): SendQuotaStatus {
@@ -466,7 +475,7 @@ export async function sendWhatsAppFollowUp(
     lastContactedAt: now.toISOString(),
     nextReminderAt: computeNextReminderDate(lead.reminderDays, now),
     history: [
-      ...lead.history,
+      ...(Array.isArray(lead.history) ? lead.history : []),
       {
         id: `h_${now.getTime()}_${Math.random().toString(36).slice(2, 6)}`,
         type: 'whatsapp_sent',
@@ -489,8 +498,24 @@ export async function sendWhatsAppFollowUp(
 /* WhatsApp session (local simulation)                                 */
 /* ------------------------------------------------------------------ */
 
+function normalizeWaSession(raw: unknown): WhatsAppSessionState {
+  if (!raw || typeof raw !== 'object') {
+    return { ...DEFAULT_WA_SESSION };
+  }
+  const obj = raw as Partial<WhatsAppSessionState>;
+  const validStatus =
+    obj.status === 'connected' || obj.status === 'disconnected' || obj.status === 'qr'
+      ? obj.status
+      : 'qr';
+  return {
+    ...obj,
+    status: validStatus,
+  };
+}
+
 export async function fetchWhatsAppSession(): Promise<WhatsAppSessionState> {
-  return readJson<WhatsAppSessionState>(WA_SESSION_KEY, { status: 'qr' });
+  const stored = readJson<unknown>(WA_SESSION_KEY, DEFAULT_WA_SESSION);
+  return normalizeWaSession(stored);
 }
 
 export async function updateWhatsAppSession(
@@ -523,9 +548,10 @@ export function getDesktopNotificationPermission(): DesktopNotificationPermissio
 }
 
 export function getDueLeadsForNotification(leads: Lead[]): Lead[] {
+  if (!Array.isArray(leads)) return [];
   const now = Date.now();
   return leads.filter((lead) => {
-    if (lead.status === 'Closed' || lead.status === 'Replied') return false;
+    if (!lead || lead.status === 'Closed' || lead.status === 'Replied') return false;
     if (!lead.nextReminderAt) return false;
     const t = new Date(lead.nextReminderAt).getTime();
     return !Number.isNaN(t) && t <= now;
@@ -537,11 +563,14 @@ function notifiedKey(leadId: string, reminderAt: string): string {
 }
 
 export function hasLeadReminderBeenNotified(leadId: string, reminderAt: string): boolean {
-  return readJson<string[]>(NOTIFIED_KEY, []).includes(notifiedKey(leadId, reminderAt));
+  const list = readJson<unknown>(NOTIFIED_KEY, []);
+  if (!Array.isArray(list)) return false;
+  return list.includes(notifiedKey(leadId, reminderAt));
 }
 
 export function markLeadReminderNotified(leadId: string, reminderAt: string): void {
-  const list = readJson<string[]>(NOTIFIED_KEY, []);
+  const raw = readJson<unknown>(NOTIFIED_KEY, []);
+  const list = Array.isArray(raw) ? raw.map(String) : [];
   const key = notifiedKey(leadId, reminderAt);
   if (!list.includes(key)) {
     writeJson(NOTIFIED_KEY, [...list.slice(-200), key]);
