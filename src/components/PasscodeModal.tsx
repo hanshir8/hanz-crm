@@ -1,126 +1,133 @@
-import React, { useState } from 'react';
-import { KeyRound, RotateCcw, X } from 'lucide-react';
-import {
-  resetStoredPasscodeToDefault,
-  setStoredPasscode,
-} from '../services/crmService';
+import React, { useEffect, useState } from 'react';
+import { KeyRound, RotateCcw, ShieldOff, X } from 'lucide-react';
 
 interface PasscodeModalProps {
   isOpen: boolean;
-  currentPasscode: string;
+  currentPasscode?: string | null;
   onClose: () => void;
-  onPasscodeUpdated: (newCode: string) => void;
+  onSavePasscode: (nextPasscode: string | null) => void;
+  onResetPasscode: () => void;
 }
 
 export function PasscodeModal({
   isOpen,
   currentPasscode,
   onClose,
-  onPasscodeUpdated,
+  onSavePasscode,
+  onResetPasscode,
 }: PasscodeModalProps) {
-  const [newCode, setNewCode] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setPasscodeInput(currentPasscode ?? '');
+    setErrorMsg('');
+  }, [isOpen, currentPasscode]);
 
   if (!isOpen) return null;
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-    const cleaned = newCode.trim();
-    if (!/^\d{4}$/.test(cleaned)) {
-      setError('Passcode must be exactly 4 digits.');
+    const trimmed = passcodeInput.trim();
+    if (trimmed.length < 4) {
+      setErrorMsg('Passcode must be at least 4 characters (or click Disable Lock).');
       return;
     }
-    if (setStoredPasscode(cleaned)) {
-      onPasscodeUpdated(cleaned);
-      setNewCode('');
-      onClose();
-    } else {
-      setError('Unable to save passcode in browser storage.');
-    }
-  };
-
-  const handleReset = () => {
-    const def = resetStoredPasscodeToDefault();
-    onPasscodeUpdated(def);
-    setNewCode('');
-    setError(null);
-    onClose();
+    setErrorMsg('');
+    onSavePasscode(trimmed);
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
-        className="fixed inset-0 bg-black/30 backdrop-blur-[1px]"
+        className="fixed inset-0 bg-black/35 backdrop-blur-[2px]"
         onClick={onClose}
       />
-      <div className="relative z-10 w-full max-w-sm bg-white rounded-3xl border border-black/10 shadow-xl p-6 space-y-4">
+
+      <div className="relative z-10 w-full max-w-md rounded-3xl bg-white border border-black/[0.08] shadow-xl p-6 space-y-5">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-[#007AFF]/10 text-[#007AFF] flex items-center justify-center">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-2xl bg-[#1D1D1F] text-white flex items-center justify-center">
               <KeyRound className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-[#1D1D1F]">
-                Workspace Passcode
+              <h2 className="text-base font-semibold tracking-tight text-[#1D1D1F]">
+                Quick-Lock Passcode
               </h2>
-              <p className="text-[11px] text-[#6E6E73] font-mono">
-                Current PIN: {currentPasscode}
+              <p className="text-xs text-[#6E6E73]">
+                {currentPasscode ? 'Lock screen is currently active' : 'No passcode set'}
               </p>
             </div>
           </div>
+
           <button
             type="button"
             onClick={onClose}
             aria-label="Close modal"
-            className="p-1.5 rounded-xl text-[#8E8E93] hover:text-[#1D1D1F] hover:bg-[#F5F5F7] cursor-pointer"
+            className="p-1.5 rounded-xl text-[#6E6E73] hover:text-[#1D1D1F] hover:bg-[#F5F5F7] transition cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {error && (
-          <p className="text-xs text-[#C62828] bg-[#FF3B30]/10 rounded-xl px-3 py-2">
-            {error}
-          </p>
-        )}
-
-        <form onSubmit={handleSave} className="space-y-3">
-          <div className="space-y-1">
-            <label className="block text-xs font-medium text-[#6E6E73]">
-              New 4-Digit PIN
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-[#1D1D1F] mb-1">
+              New Passcode
             </label>
             <input
-              type="text"
+              type="password"
               inputMode="numeric"
-              maxLength={4}
-              autoFocus
-              value={newCode}
-              onChange={(e) =>
-                setNewCode(e.target.value.replace(/\D/g, '').slice(0, 4))
-              }
-              placeholder="e.g. 2468"
-              className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/10 text-sm font-mono tracking-widest focus:outline-none focus:bg-white focus:border-[#007AFF]"
+              value={passcodeInput}
+              onChange={(e) => {
+                setPasscodeInput(e.target.value);
+                if (errorMsg) setErrorMsg('');
+              }}
+              placeholder="Enter 4+ digit passcode"
+              className="w-full px-3.5 py-2.5 rounded-xl border border-black/15 bg-[#FAFAFC] text-sm focus:outline-none focus:border-[#0071E3]"
             />
+            {errorMsg && <p className="text-xs text-red-600 mt-1">{errorMsg}</p>}
           </div>
 
-          <button
-            type="submit"
-            className="w-full py-2.5 rounded-xl bg-[#007AFF] hover:bg-[#0066D6] text-white text-xs font-semibold cursor-pointer"
-          >
-            Update Passcode
-          </button>
-        </form>
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onResetPasscode();
+                  setPasscodeInput('1234');
+                  setErrorMsg('');
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-black/12 text-xs font-medium text-[#1D1D1F] hover:bg-[#F5F5F7] transition cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reset (1234)</span>
+              </button>
 
-        <button
-          type="button"
-          onClick={handleReset}
-          className="w-full py-2 rounded-xl bg-[#F5F5F7] hover:bg-black/5 text-xs font-medium text-[#1D1D1F] inline-flex items-center justify-center gap-1.5 cursor-pointer"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          Reset to Default (2468)
-        </button>
+              {currentPasscode && (
+                <button
+                  type="button"
+                  onClick={() => onSavePasscode(null)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-red-200 text-xs font-medium text-red-600 hover:bg-red-50 transition cursor-pointer"
+                >
+                  <ShieldOff className="w-3.5 h-3.5" />
+                  <span>Disable</span>
+                </button>
+              )}
+            </div>
+
+            <button
+              type="submit"
+              className="px-4 py-2 rounded-xl bg-[#1D1D1F] text-white text-xs sm:text-sm font-medium hover:opacity-90 transition cursor-pointer"
+            >
+              Save Passcode
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
 }
+
+export default PasscodeModal;
