@@ -1,10 +1,7 @@
-export type LeadStatus = 'new' | 'contacted' | 'replied' | 'closed';
+export type LeadStatus = 'New' | 'Contacted' | 'Replied' | 'Closed';
 
-export type ReminderCadence =
-  | 'daily'
-  | 'every_2_days'
-  | 'every_3_days'
-  | 'weekly';
+// Days until next reminder. 0 = no automatic reminder.
+export type ReminderCadence = 0 | 3 | 4 | 7;
 
 export type SmartViewId =
   | 'due_today'
@@ -14,34 +11,58 @@ export type SmartViewId =
   | 'all'
   | 'closed';
 
+export interface LeadHistoryEntry {
+  id: string;
+  type: 'whatsapp_sent' | 'note' | 'status_change';
+  message: string;
+  templateName?: string;
+  at: string;
+}
+
 export interface Lead {
   id: string;
   name: string;
-  phone?: string;
-  email?: string;
-  vehicleModel?: string;
-  notes?: string;
+  phone: string;
+  interest: string;
   status: LeadStatus;
-  cadence: ReminderCadence;
-  nextFollowUpAt: string;
+  reminderDays: ReminderCadence;
+  lastContactedAt: string | null;
+  nextReminderAt: string | null;
+  notes: string;
+  history: LeadHistoryEntry[];
   createdAt: string;
-  updatedAt: string;
 }
 
 export interface FollowUpTemplate {
   id: string;
-  title: string;
-  body: string;
-  channel?: 'whatsapp' | 'call' | 'email' | 'sms';
+  name: string;
+  description?: string;
+  buildMessage: (lead: Lead) => string;
 }
 
-export interface QuotaConfig {
-  dailyTarget: number;
-  weeklyTarget: number;
-}
-
-export interface WorkspaceSession {
+export interface SendQuotaStatus {
+  sentIn24h: number;
+  limit: number;
+  remaining: number;
   isLocked: boolean;
-  hasPasscode: boolean;
-  lastUnlockedAt?: string;
+}
+
+export interface WhatsAppSessionState {
+  status: 'qr' | 'connected' | 'disconnected';
+  qrCode?: string;
+  pairedAt?: string;
+  updatedAt?: string;
+}
+
+export type DesktopNotificationPermission = NotificationPermission | 'unsupported';
+
+export type ToastType = 'success' | 'info' | 'warning' | 'error';
+
+export interface ToastItem {
+  id: string;
+  type: ToastType;
+  title: string;
+  description?: string;
+  actionLabel?: string;
+  actionUrl?: string;
 }
