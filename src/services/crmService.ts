@@ -95,7 +95,7 @@ function writeLocalLeads(leads: Lead[]): void {
   try {
     localStorage.setItem(LEADS_STORAGE_KEY, JSON.stringify(leads));
   } catch {
-    // Ignore storage quota errors
+    // Ignore storage quota errors in restricted browser contexts
   }
 }
 
