@@ -1,103 +1,91 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ErrorBoundary } from './components/ErrorBoundary';
+import type { Session } from '@supabase/supabase-js';
+import {
+  buildWhatsAppMeUrl,
+  computeNextFollowUpIso,
+  DAILY_QUOTA_LIMIT,
+  daysToSqlCadence,
+  deleteLeadInSupabase,
+  fetchUserLeadsFromSupabase,
+  getActiveSession,
+  getLeadReminderMeta,
+  getSentCountLast24h,
+  loadCachedLeads,
+  normalizeLeadStatus,
+  recordSentTimestamp,
+  saveCachedLeads,
+  supabase,
+  upsertLeadInSupabase,
+} from './services/crmService';
+import type {
+  Lead,
+  LeadStatus,
+  ReminderCadence,
+  SmartViewId,
+} from './types/crm';
 import { HowToUseModal } from './components/HowToUseModal';
 import { LeadInspector } from './components/LeadInspector';
 import { LeadList } from './components/LeadList';
 import { LockScreen } from './components/LockScreen';
 import { NewLeadModal } from './components/NewLeadModal';
+import { PasscodeModal } from './components/PasscodeModal';
 import { QrModal } from './components/QrModal';
 import { Sidebar } from './components/Sidebar';
-import { ToastContainer } from './components/ToastContainer';
+import { ToastContainer, type ToastMessage } from './components/ToastContainer';
 import { TopHeader } from './components/TopHeader';
-import {
-  clearSupabaseAuthSession,
-  fetchWhatsAppSession,
-  FOLLOW_UP_TEMPLATES,
-  getDesktopNotificationPermission,
-  getDueLeadsForNotification,
-  getLeadReminderMeta,
-  getQuotaStatus,
-  getSupabaseSession,
-  hasLeadReminderBeenNotified,
-  loadLeads,
-  markLeadReminderNotified,
-  matchesSmartView,
-  restoreSampleLeads,
-  saveLeads,
-  sendWhatsAppFollowUp,
-  updateWhatsAppSession,
-} from './services/crmService';
-import type {
-  DesktopNotificationPermission,
-  Lead,
-  SendQuotaStatus,
-  SmartViewId,
-  ToastItem,
-  ToastType,
-  WhatsAppSessionState,
-} from './types/crm';
 
-function CrmWorkspaceApp() {
-  const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
+const PASSCODE_STORAGE_KEY = 'goodshield_crm_passcode_v1';
+const LOCK_STATE_KEY = 'goodshield_crm_locked_v1';
 
-  const [leads, setLeads] = useState<Lead[]>(() => loadLeads());
-  const [activeView, setActiveView] = useState<SmartViewId>('due_today');
-  const [searchQuery, setSearchQuery] = useState<string>('');
+export function App() {
+  const [leads, setLeads] = useState<Lead[]>(() => loadCachedLeads());
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(() => {
-    const initial = loadLeads();
+    const initial = loadCachedLeads();
     return initial[0]?.id ?? null;
   });
 
+  const [session, setSession] = useState<Session | null>(null);
+  const [isSyncingLeads, setIsSyncingLeads] = useState(false);
+
+  const [activeView, setActiveView] = useState<SmartViewId>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [mobilePane, setMobilePane] = useState<'list' | 'detail'>('list');
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
 
-  const [isNewLeadOpen, setIsNewLeadOpen] = useState<boolean>(false);
-  const [isQrModalOpen, setIsQrModalOpen] = useState<boolean>(false);
-  const [isHowToUseOpen, setIsHowToUseOpen] = useState<boolean>(false);
+  const [sentLast24h, setSentLast24h] = useState<number>(() => getSentCountLast24h());
+  const [isSending, setIsSending] = useState(false);
 
-  const [quota, setQuota] = useState<SendQuotaStatus>(() => getQuotaStatus());
-  const [sendingLeadId, setSendingLeadId] = useState<string | null>(null);
+  // Modals & quick device lock state
+  const [isNewLeadOpen, setIsNewLeadOpen] = useState(false);
+  const [isQrOpen, setIsQrOpen] = useState(false);
+  const [isHowToUseOpen, setIsHowToUseOpen] = useState(false);
+  const [isPasscodeModalOpen, setIsPasscodeModalOpen] = useState(false);
 
-  const [whatsappSession, setWhatsappSession] = useState<WhatsAppSessionState>({
-    status: 'qr',
+  const [passcode, setPasscode] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(PASSCODE_STORAGE_KEY);
+    } catch {
+      return null;
+    }
   });
-  const [isUpdatingQr, setIsUpdatingQr] = useState<boolean>(false);
 
-  const [notificationPermission, setNotificationPermission] =
-    useState<DesktopNotificationPermission>(() =>
-      getDesktopNotificationPermission()
-    );
+  const [isLocked, setIsLocked] = useState<boolean>(() => {
+    try {
+      const savedPasscode = localStorage.getItem(PASSCODE_STORAGE_KEY);
+      return Boolean(savedPasscode) && localStorage.getItem(LOCK_STATE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
 
-  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const pushToast = useCallback(
-    (
-      type: ToastType,
-      title: string,
-      options?: {
-        description?: string;
-        actionLabel?: string;
-        actionUrl?: string;
-        durationMs?: number;
-      }
-    ) => {
+    (text: string, tone: ToastMessage['tone'] = 'info') => {
       const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const item: ToastItem = {
-        id,
-        type,
-        title,
-        description: options?.description,
-        actionLabel: options?.actionLabel,
-        actionUrl: options?.actionUrl,
-      };
-      setToasts((prev) => [...prev.slice(-3), item]);
-
-      const duration = options?.durationMs ?? 5000;
-      if (duration > 0 && typeof window !== 'undefined') {
-        window.setTimeout(() => {
-          setToasts((prev) => prev.filter((t) => t.id !== id));
-        }, duration);
-      }
+      setToasts((prev) => [...prev.slice(-3), { id, text, tone }]);
+      window.setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, 3600);
     },
     []
   );
@@ -106,142 +94,291 @@ function CrmWorkspaceApp() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // Auto-unlock if already signed in with Supabase
-  useEffect(() => {
-    getSupabaseSession().then((session) => {
-      if (session) setIsUnlocked(true);
+  const persistLeadsState = useCallback((updater: (prev: Lead[]) => Lead[]) => {
+    setLeads((prev) => {
+      const next = updater(prev);
+      saveCachedLeads(next);
+      return next;
     });
   }, []);
 
-  useEffect(() => {
-    saveLeads(leads);
-  }, [leads]);
+  // Sync leads from Supabase for the authenticated user
+  const syncLeadsForUser = useCallback(
+    async (userId: string, showToast = false) => {
+      if (!supabase || !userId) return;
+      setIsSyncingLeads(true);
+      try {
+        const localSnapshot = loadCachedLeads();
+        const unownedLocal = localSnapshot.filter(
+          (l) => !l.userId || l.userId !== userId
+        );
 
+        // Migrate any local leads that haven't been assigned to this user yet
+        for (const localLead of unownedLocal) {
+          try {
+            await upsertLeadInSupabase(
+              { ...localLead, userId },
+              userId
+            );
+          } catch {
+            // Keep local copy if an individual migration fails
+          }
+        }
+
+        const remoteLeads = await fetchUserLeadsFromSupabase(userId);
+        const existingMap = new Map(localSnapshot.map((l) => [l.id, l]));
+
+        const merged = remoteLeads.map((remote) => {
+          const localMatch = existingMap.get(remote.id);
+          return {
+            ...remote,
+            history:
+              localMatch?.history && localMatch.history.length > 0
+                ? localMatch.history
+                : remote.history ?? [],
+          };
+        });
+
+        setLeads(merged);
+        saveCachedLeads(merged);
+        setSelectedLeadId((prevId) =>
+          prevId && merged.some((l) => l.id === prevId)
+            ? prevId
+            : merged[0]?.id ?? null
+        );
+
+        if (showToast) {
+          pushToast(`Synced ${merged.length} lead(s) from cloud.`, 'success');
+        }
+      } catch (err: any) {
+        pushToast(err?.message || 'Failed to sync leads from Supabase.', 'error');
+      } finally {
+        setIsSyncingLeads(false);
+      }
+    },
+    [pushToast]
+  );
+
+  // Initialize Supabase Auth session and listen for sign-in / sign-out changes
   useEffect(() => {
-    if (!isUnlocked) return;
-    let active = true;
-    fetchWhatsAppSession()
-      .then((session) => {
-        if (active) setWhatsappSession(session);
-      })
-      .catch(() => {
-        // Non-blocking fallback
-      });
-    setQuota(getQuotaStatus());
-    return () => {
-      active = false;
+    let isMounted = true;
+
+    getActiveSession().then((activeSession) => {
+      if (!isMounted) return;
+      setSession(activeSession);
+      if (activeSession?.user?.id) {
+        void syncLeadsForUser(activeSession.user.id, false);
+      }
+    });
+
+    if (!supabase) return () => {
+      isMounted = false;
     };
-  }, [isUnlocked]);
 
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, nextSession) => {
+        if (!isMounted) return;
+        setSession(nextSession);
+        if (nextSession?.user?.id) {
+          void syncLeadsForUser(nextSession.user.id, false);
+        } else {
+          setLeads(loadCachedLeads());
+        }
+      }
+    );
+
+    return () => {
+      isMounted = false;
+      authListener?.subscription?.unsubscribe();
+    };
+  }, [syncLeadsForUser]);
+
+  // Refresh 24h outreach quota periodically
   useEffect(() => {
     const interval = window.setInterval(() => {
-      setQuota(getQuotaStatus());
+      setSentLast24h(getSentCountLast24h());
     }, 30_000);
     return () => window.clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    if (!isUnlocked || notificationPermission !== 'granted') return;
-    if (typeof Notification === 'undefined') return;
+  const isQuotaLocked = sentLast24h >= DAILY_QUOTA_LIMIT;
+  const userId = session?.user?.id ?? null;
 
-    const checkDueReminders = () => {
-      const dueLeads = getDueLeadsForNotification(leads);
-      for (const lead of dueLeads) {
-        if (!lead.nextReminderAt) continue;
-        if (hasLeadReminderBeenNotified(lead.id, lead.nextReminderAt)) continue;
+  const counts = useMemo(() => {
+    let dueToday = 0;
+    let overdue = 0;
+    let newCount = 0;
+    let contacted = 0;
+    let replied = 0;
+    let closed = 0;
 
-        try {
-          const n = new Notification(`GOODSHIELD CRM: Follow up with ${lead.name}`, {
-            body: `${lead.interest} (${lead.phone}) is due for a reminder.`,
-            tag: `goodshield-reminder-${lead.id}`,
-          });
-          n.onclick = () => {
-            window.focus();
-            setSelectedLeadId(lead.id);
-            setMobilePane('detail');
-          };
-          markLeadReminderNotified(lead.id, lead.nextReminderAt);
-        } catch {
-          // Ignore blocked notification calls
-        }
-      }
-    };
+    for (const lead of leads) {
+      const meta = getLeadReminderMeta(lead);
+      if (meta.isDueToday) dueToday += 1;
+      if (meta.isOverdue) overdue += 1;
 
-    checkDueReminders();
-    const timer = window.setInterval(checkDueReminders, 60_000);
-    return () => window.clearInterval(timer);
-  }, [isUnlocked, leads, notificationPermission]);
+      const st = normalizeLeadStatus(lead.status);
+      if (st === 'new') newCount += 1;
+      else if (st === 'contacted') contacted += 1;
+      else if (st === 'replied') replied += 1;
+      else if (st === 'closed') closed += 1;
+    }
 
-  const counts = useMemo<Record<SmartViewId, number>>(() => {
     return {
-      due_today: leads.filter((l) => matchesSmartView(l, 'due_today')).length,
-      overdue: leads.filter((l) => matchesSmartView(l, 'overdue')).length,
-      upcoming: leads.filter((l) => matchesSmartView(l, 'upcoming')).length,
-      replied: leads.filter((l) => matchesSmartView(l, 'replied')).length,
       all: leads.length,
-      closed: leads.filter((l) => matchesSmartView(l, 'closed')).length,
+      due_today: dueToday,
+      overdue,
+      new: newCount,
+      contacted,
+      replied,
+      closed,
     };
   }, [leads]);
 
   const filteredLeads = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const matching = leads.filter((lead) => {
-      if (!matchesSmartView(lead, activeView)) return false;
-      if (!q) return true;
-      return (
-        lead.name.toLowerCase().includes(q) ||
-        lead.phone.toLowerCase().includes(q) ||
-        lead.interest.toLowerCase().includes(q) ||
-        lead.notes.toLowerCase().includes(q)
-      );
-    });
 
-    return [...matching].sort((a, b) => {
-      const metaA = getLeadReminderMeta(a);
-      const metaB = getLeadReminderMeta(b);
-      if (metaA.sortPriority !== metaB.sortPriority) {
-        return metaA.sortPriority - metaB.sortPriority;
+    return leads.filter((lead) => {
+      const meta = getLeadReminderMeta(lead);
+      const st = normalizeLeadStatus(lead.status);
+
+      if (activeView === 'due_today' && !meta.isDueToday) return false;
+      if (activeView === 'overdue' && !meta.isOverdue) return false;
+      if (
+        (activeView === 'new' ||
+          activeView === 'contacted' ||
+          activeView === 'replied' ||
+          activeView === 'closed') &&
+        st !== activeView
+      ) {
+        return false;
       }
-      const timeA = a.nextReminderAt ? new Date(a.nextReminderAt).getTime() : Number.MAX_SAFE_INTEGER;
-      const timeB = b.nextReminderAt ? new Date(b.nextReminderAt).getTime() : Number.MAX_SAFE_INTEGER;
-      return timeA - timeB;
+
+      if (!q) return true;
+
+      const haystack = [
+        lead.name,
+        lead.phone,
+        lead.email ?? '',
+        lead.interest,
+        lead.vehicleModel ?? '',
+        lead.notes ?? '',
+      ]
+        .join(' ')
+        .toLowerCase();
+
+      return haystack.includes(q);
     });
   }, [leads, activeView, searchQuery]);
 
-  const selectedLead = useMemo(() => {
-    if (!selectedLeadId) return null;
-    return leads.find((l) => l.id === selectedLeadId) ?? null;
-  }, [leads, selectedLeadId]);
-
-  const repliedCount = useMemo(
-    () => leads.filter((l) => l.status === 'Replied').length,
-    [leads]
+  const selectedLead = useMemo(
+    () => leads.find((l) => l.id === selectedLeadId) ?? null,
+    [leads, selectedLeadId]
   );
 
-  const repliedRatePct = useMemo(() => {
-    if (leads.length === 0) return 0;
-    return Math.round((repliedCount / leads.length) * 100);
-  }, [leads.length, repliedCount]);
+  const handleSelectLead = (leadId: string) => {
+    setSelectedLeadId(leadId);
+    setMobilePane('detail');
+  };
 
-  const handleCreateLead = (newLead: Lead) => {
-    setLeads((prev) => [newLead, ...prev]);
+  const handleCreateLead = async (input: {
+    name: string;
+    phone: string;
+    email?: string;
+    interest: string;
+    notes?: string;
+    status?: LeadStatus;
+    reminderDays?: ReminderCadence;
+  }) => {
+    const nowIso = new Date().toISOString();
+    const status = normalizeLeadStatus(input.status ?? 'new');
+    const reminderDays: ReminderCadence = input.reminderDays ?? 3;
+    const interest = input.interest.trim();
+
+    const newLead: Lead = {
+      id: `lead_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      userId,
+      name: input.name.trim(),
+      phone: input.phone.trim(),
+      email: input.email?.trim() || undefined,
+      interest,
+      vehicleModel: interest,
+      notes: input.notes?.trim() ?? '',
+      status,
+      reminderDays,
+      cadence: daysToSqlCadence(reminderDays),
+      nextFollowUpAt: computeNextFollowUpIso(reminderDays, nowIso),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      history: [],
+    };
+
+    persistLeadsState((prev) => [newLead, ...prev]);
     setSelectedLeadId(newLead.id);
     setMobilePane('detail');
-    pushToast('success', `Added ${newLead.name}`, {
-      description:
-        newLead.reminderDays > 0
-          ? `Follow-up reminder set for ${newLead.reminderDays} days.`
-          : 'Lead saved without automatic reminder.',
-    });
+    setIsNewLeadOpen(false);
+
+    if (userId) {
+      try {
+        const saved = await upsertLeadInSupabase(newLead, userId);
+        persistLeadsState((prev) =>
+          prev.map((item) => (item.id === newLead.id ? saved : item))
+        );
+        pushToast('Lead saved and synced to cloud.', 'success');
+      } catch (err: any) {
+        pushToast(
+          err?.message || 'Saved locally; cloud sync will retry.',
+          'error'
+        );
+      }
+    } else {
+      pushToast('Lead added locally.', 'success');
+    }
   };
 
-  const handleUpdateLead = (updated: Lead) => {
-    setLeads((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
+  const handleUpdateLead = async (updatedInput: Lead) => {
+    const nowIso = new Date().toISOString();
+    const status = normalizeLeadStatus(updatedInput.status);
+    const reminderDays = updatedInput.reminderDays ?? 3;
+    const interest = (updatedInput.interest ?? updatedInput.vehicleModel ?? '').trim();
+
+    const normalizedLead: Lead = {
+      ...updatedInput,
+      userId: updatedInput.userId ?? userId,
+      name: updatedInput.name.trim(),
+      phone: updatedInput.phone.trim(),
+      interest,
+      vehicleModel: interest,
+      status,
+      reminderDays,
+      cadence: daysToSqlCadence(reminderDays),
+      nextFollowUpAt:
+        updatedInput.nextFollowUpAt ||
+        computeNextFollowUpIso(reminderDays, nowIso),
+      updatedAt: nowIso,
+    };
+
+    persistLeadsState((prev) =>
+      prev.map((item) => (item.id === normalizedLead.id ? normalizedLead : item))
+    );
+
+    if (userId) {
+      try {
+        const saved = await upsertLeadInSupabase(normalizedLead, userId);
+        persistLeadsState((prev) =>
+          prev.map((item) => (item.id === normalizedLead.id ? saved : item))
+        );
+      } catch (err: any) {
+        pushToast(
+          err?.message || 'Updated locally; cloud sync failed.',
+          'error'
+        );
+      }
+    }
   };
 
-  const handleDeleteLead = (leadId: string) => {
-    const target = leads.find((l) => l.id === leadId);
-    setLeads((prev) => {
+  const handleDeleteLead = async (leadId: string) => {
+    persistLeadsState((prev) => {
       const remaining = prev.filter((l) => l.id !== leadId);
       if (selectedLeadId === leadId) {
         setSelectedLeadId(remaining[0]?.id ?? null);
@@ -249,150 +386,127 @@ function CrmWorkspaceApp() {
       }
       return remaining;
     });
-    if (target) {
-      pushToast('info', `Removed ${target.name}`);
+
+    if (userId) {
+      try {
+        await deleteLeadInSupabase(leadId, userId);
+        pushToast('Lead deleted.', 'info');
+      } catch (err: any) {
+        pushToast(err?.message || 'Failed to delete lead in cloud.', 'error');
+      }
+    } else {
+      pushToast('Lead removed.', 'info');
     }
   };
 
   const handleSendFollowUp = async (
-    lead: Lead,
+    targetLead: Lead,
     message: string,
     templateName?: string
   ) => {
-    const latestQuota = getQuotaStatus();
-    setQuota(latestQuota);
+    if (isQuotaLocked || isSending) return;
+    setIsSending(true);
 
-    if (latestQuota.isLocked) {
-      pushToast('warning', `Daily 24h WhatsApp limit reached (${latestQuota.limit}/${latestQuota.limit})`, {
-        description:
-          'GOODSHIELD paused sending to protect your number from spam flags.',
-      });
-      return;
-    }
-
-    setSendingLeadId(lead.id);
     try {
-      const result = await sendWhatsAppFollowUp(lead, message, {
-        templateName,
-        isQrConnected: whatsappSession.status === 'connected',
-      });
+      const waUrl = buildWhatsAppMeUrl(targetLead.phone, message);
+      window.open(waUrl, '_blank', 'noopener,noreferrer');
 
-      setLeads((prev) =>
-        prev.map((item) =>
-          item.id === result.updatedLead.id ? result.updatedLead : item
-        )
-      );
-      setQuota(result.quota);
+      recordSentTimestamp();
+      setSentLast24h(getSentCountLast24h());
 
-      pushToast(
-        'success',
-        `Follow-up logged for ${lead.name} (${result.quota.sentIn24h}/${result.quota.limit} in 24h)`,
-        {
-          description: `Next reminder scheduled in ${result.updatedLead.reminderDays} days.`,
-          actionLabel: 'Open WhatsApp Link',
-          actionUrl: result.waMeUrl,
-        }
-      );
-    } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : 'Unable to send follow-up.';
-      pushToast('error', 'Follow-up not sent', { description: msg });
+      const nowIso = new Date().toISOString();
+      const nextStatus: LeadStatus =
+        normalizeLeadStatus(targetLead.status) === 'new'
+          ? 'contacted'
+          : normalizeLeadStatus(targetLead.status);
+      const reminderDays = targetLead.reminderDays ?? 3;
+
+      const updatedLead: Lead = {
+        ...targetLead,
+        userId: targetLead.userId ?? userId,
+        status: nextStatus,
+        reminderDays,
+        cadence: daysToSqlCadence(reminderDays),
+        lastContactedAt: nowIso,
+        nextFollowUpAt: computeNextFollowUpIso(reminderDays, nowIso),
+        updatedAt: nowIso,
+        history: [
+          {
+            id: `hist_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            message,
+            templateName: templateName || 'Follow-Up Sent',
+            sentAt: nowIso,
+            at: nowIso,
+          },
+          ...(targetLead.history ?? []),
+        ],
+      };
+
+      await handleUpdateLead(updatedLead);
+      pushToast('Follow-up logged and next reminder scheduled.', 'success');
     } finally {
-      setSendingLeadId(null);
+      setIsSending(false);
     }
   };
 
-  const handleQuickSend = async (lead: Lead) => {
-    const defaultTpl = FOLLOW_UP_TEMPLATES[0];
-    await handleSendFollowUp(
-      lead,
-      defaultTpl.buildMessage(lead),
-      defaultTpl.name
-    );
-  };
-
-  const handleLoadSampleLeads = () => {
-    const restored = restoreSampleLeads();
-    setLeads(restored);
-    setSelectedLeadId(restored[0]?.id ?? null);
-    setActiveView('all');
-    pushToast('success', 'Sample leads loaded', {
-      description: 'Added 3 example contacts with 3–4 day reminder cadences.',
-    });
-  };
-
-  const handleLockWorkspace = () => {
-    clearSupabaseAuthSession();
-    setIsUnlocked(false);
-    setIsMobileMenuOpen(false);
-  };
-
-  const handleRequestNotificationPermission = async () => {
-    if (typeof window === 'undefined' || typeof Notification === 'undefined') {
-      setNotificationPermission('unsupported');
-      pushToast('info', 'Desktop notifications unsupported in this browser');
-      return;
-    }
-
+  const handleSavePasscode = (newPasscode: string | null) => {
     try {
-      const permission = await Notification.requestPermission();
-      setNotificationPermission(permission);
-      if (permission === 'granted') {
-        pushToast('success', 'Desktop reminder alerts enabled');
+      if (newPasscode) {
+        localStorage.setItem(PASSCODE_STORAGE_KEY, newPasscode);
+        localStorage.setItem(LOCK_STATE_KEY, '0');
+        setPasscode(newPasscode);
+        setIsLocked(false);
+        pushToast('Quick lock passcode updated.', 'success');
       } else {
-        pushToast('warning', 'Desktop notifications were not enabled');
+        localStorage.removeItem(PASSCODE_STORAGE_KEY);
+        localStorage.removeItem(LOCK_STATE_KEY);
+        setPasscode(null);
+        setIsLocked(false);
+        pushToast('Quick lock passcode removed.', 'info');
       }
     } catch {
-      pushToast('error', 'Could not request notification permission');
+      pushToast('Could not update passcode storage.', 'error');
     }
+    setIsPasscodeModalOpen(false);
   };
 
-  const handleTestDesktopAlert = () => {
-    if (
-      typeof window === 'undefined' ||
-      typeof Notification === 'undefined' ||
-      Notification.permission !== 'granted'
-    ) {
-      pushToast('info', 'Enable desktop notifications first');
+  const handleLockScreen = () => {
+    if (!passcode) {
+      setIsPasscodeModalOpen(true);
       return;
     }
-
     try {
-      new Notification('GOODSHIELD CRM — Test Alert', {
-        body: 'Follow-up desktop notifications are active and working.',
-      });
-      pushToast('info', 'Test desktop notification sent');
+      localStorage.setItem(LOCK_STATE_KEY, '1');
     } catch {
-      pushToast('error', 'Unable to trigger test notification');
+      // Ignore storage errors
     }
+    setIsLocked(true);
   };
 
-  const handleQrAction = async (action: 'refresh' | 'pair' | 'disconnect') => {
-    setIsUpdatingQr(true);
-    try {
-      const next = await updateWhatsAppSession(action);
-      setWhatsappSession(next);
-      if (action === 'pair') {
-        pushToast('success', 'WhatsApp session marked as paired');
-      } else if (action === 'disconnect') {
-        pushToast('info', 'WhatsApp session disconnected');
-      } else {
-        pushToast('info', 'Session QR refreshed');
+  const handleUnlock = (entered: string): boolean => {
+    if (!passcode || entered === passcode) {
+      try {
+        localStorage.setItem(LOCK_STATE_KEY, '0');
+      } catch {
+        // Ignore storage errors
       }
-    } finally {
-      setIsUpdatingQr(false);
+      setIsLocked(false);
+      return true;
     }
+    return false;
   };
 
-  if (!isUnlocked) {
+  const handleSignOut = async () => {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setSession(null);
+    pushToast('Signed out of Supabase session.', 'info');
+  };
+
+  if (isLocked && passcode) {
     return (
       <>
-        <LockScreen
-          onUnlock={() => {
-            setIsUnlocked(true);
-            setQuota(getQuotaStatus());
-          }}
-        />
+        <LockScreen onUnlock={handleUnlock} />
         <ToastContainer toasts={toasts} onDismiss={dismissToast} />
       </>
     );
@@ -401,78 +515,55 @@ function CrmWorkspaceApp() {
   return (
     <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] flex flex-col">
       <TopHeader
-        dueTodayCount={counts.due_today}
-        overdueCount={counts.overdue}
-        repliedRatePct={repliedRatePct}
-        repliedCount={repliedCount}
-        totalLeadsCount={leads.length}
-        activeView={activeView}
-        quota={quota}
-        whatsappSession={whatsappSession}
-        notificationPermission={notificationPermission}
-        onSelectView={(view) => {
-          setActiveView(view);
-          setMobilePane('list');
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        sentLast24h={sentLast24h}
+        quotaLimit={DAILY_QUOTA_LIMIT}
+        userEmail={session?.user?.email ?? null}
+        isSyncing={isSyncingLeads}
+        onSyncNow={() => {
+          if (userId) {
+            void syncLeadsForUser(userId, true);
+          } else {
+            pushToast('Sign in with Supabase to sync across devices.', 'info');
+          }
         }}
-        onRequestNotificationPermission={handleRequestNotificationPermission}
-        onTestDesktopAlert={handleTestDesktopAlert}
+        onSignOut={session ? handleSignOut : undefined}
+        onOpenNewLead={() => setIsNewLeadOpen(true)}
+        onOpenQr={() => setIsQrOpen(true)}
+        onOpenPasscode={() => setIsPasscodeModalOpen(true)}
+        onLock={handleLockScreen}
         onOpenHowToUse={() => setIsHowToUseOpen(true)}
-        onOpenQrModal={() => setIsQrModalOpen(true)}
-        onLockWorkspace={handleLockWorkspace}
-        onOpenMobileMenu={() => setIsMobileMenuOpen(true)}
-        onResetToMainView={() => {
-          setActiveView('due_today');
-          setSearchQuery('');
-          setMobilePane('list');
-        }}
       />
 
-      <main className="flex-1 max-w-[1600px] w-full mx-auto p-3 sm:p-5 flex gap-4 min-h-0">
+      <main className="flex-1 max-w-[1440px] w-full mx-auto p-3 sm:p-5 flex flex-col md:flex-row gap-4 min-h-0">
         <Sidebar
           activeView={activeView}
-          counts={counts}
-          isMobileMenuOpen={isMobileMenuOpen}
-          onCloseMobileMenu={() => setIsMobileMenuOpen(false)}
           onSelectView={(view) => {
             setActiveView(view);
             setMobilePane('list');
           }}
-          onOpenNewLead={() => setIsNewLeadOpen(true)}
-          onLockWorkspace={handleLockWorkspace}
+          counts={counts}
         />
 
-        <div className="flex-1 flex flex-col md:flex-row gap-4 min-h-0">
-          <LeadList
-            leads={filteredLeads}
-            selectedLeadId={selectedLeadId}
-            searchQuery={searchQuery}
-            activeView={activeView}
-            isQuotaLocked={quota.isLocked}
-            sendingLeadId={sendingLeadId}
-            mobilePane={mobilePane}
-            onSearchChange={setSearchQuery}
-            onSelectLead={(leadId) => {
-              setSelectedLeadId(leadId);
-              setMobilePane('detail');
-            }}
-            onQuickSend={handleQuickSend}
-            onOpenNewLead={() => setIsNewLeadOpen(true)}
-            onLoadSampleLeads={handleLoadSampleLeads}
-          />
+        <LeadList
+          leads={filteredLeads}
+          selectedLeadId={selectedLeadId}
+          mobilePane={mobilePane}
+          onSelectLead={handleSelectLead}
+          onOpenNewLead={() => setIsNewLeadOpen(true)}
+        />
 
-          <LeadInspector
-            lead={selectedLead}
-            isQuotaLocked={quota.isLocked}
-            isSending={
-              selectedLead ? sendingLeadId === selectedLead.id : false
-            }
-            mobilePane={mobilePane}
-            onBackToList={() => setMobilePane('list')}
-            onUpdateLead={handleUpdateLead}
-            onDeleteLead={handleDeleteLead}
-            onSendFollowUp={handleSendFollowUp}
-          />
-        </div>
+        <LeadInspector
+          lead={selectedLead}
+          isQuotaLocked={isQuotaLocked}
+          isSending={isSending}
+          mobilePane={mobilePane}
+          onBackToList={() => setMobilePane('list')}
+          onUpdateLead={handleUpdateLead}
+          onDeleteLead={handleDeleteLead}
+          onSendFollowUp={handleSendFollowUp}
+        />
       </main>
 
       <NewLeadModal
@@ -481,32 +572,22 @@ function CrmWorkspaceApp() {
         onCreateLead={handleCreateLead}
       />
 
-      <QrModal
-        isOpen={isQrModalOpen}
-        session={whatsappSession}
-        isUpdating={isUpdatingQr}
-        onClose={() => setIsQrModalOpen(false)}
-        onRefreshQr={() => handleQrAction('refresh')}
-        onMarkPaired={() => handleQrAction('pair')}
-        onDisconnect={() => handleQrAction('disconnect')}
-      />
+      <QrModal isOpen={isQrOpen} onClose={() => setIsQrOpen(false)} />
 
       <HowToUseModal
         isOpen={isHowToUseOpen}
         onClose={() => setIsHowToUseOpen(false)}
-        onRestoreSamples={handleLoadSampleLeads}
+      />
+
+      <PasscodeModal
+        isOpen={isPasscodeModalOpen}
+        hasExistingPasscode={Boolean(passcode)}
+        onClose={() => setIsPasscodeModalOpen(false)}
+        onSavePasscode={handleSavePasscode}
       />
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
-  );
-}
-
-export function App() {
-  return (
-    <ErrorBoundary>
-      <CrmWorkspaceApp />
-    </ErrorBoundary>
   );
 }
 
