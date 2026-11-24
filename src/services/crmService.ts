@@ -327,6 +327,13 @@ export function isCloudSyncConfigured(): boolean {
 
 type AuthResult = { ok: boolean; message: string };
 
+const SITE_URL_FALLBACK = 'https://hanshir8.github.io/hanz-crm/';
+
+function getRedirectUrl(): string {
+  if (typeof window === 'undefined') return SITE_URL_FALLBACK;
+  return `${window.location.origin}${import.meta.env.BASE_URL}`;
+}
+
 export async function signInWithSupabase(email: string, password: string): Promise<AuthResult> {
   if (!supabase) return { ok: false, message: 'Cloud sync is not configured.' };
 
@@ -349,6 +356,7 @@ export async function signUpWithSupabase(
   const { data, error } = await supabase.auth.signUp({
     email: email.trim(),
     password,
+    options: { emailRedirectTo: getRedirectUrl() },
   });
   if (error) return { ok: false, message: error.message, requiresEmailConfirmation: false };
 
@@ -369,12 +377,9 @@ export async function sendSupabasePasswordReset(email: string): Promise<AuthResu
   }
   if (!supabase) return { ok: false, message: 'Cloud sync is not configured.' };
 
-  const redirectTo =
-    typeof window !== 'undefined'
-      ? `${window.location.origin}/hanz-crm/`
-      : 'https://hanshir8.github.io/hanz-crm/';
-
-  const { error } = await supabase.auth.resetPasswordForEmail(trimmedEmail, { redirectTo });
+  const { error } = await supabase.auth.resetPasswordForEmail(trimmedEmail, {
+    redirectTo: getRedirectUrl(),
+  });
   if (error) return { ok: false, message: error.message };
 
   return { ok: true, message: `Password reset email sent to ${trimmedEmail}.` };
