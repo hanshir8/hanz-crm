@@ -11,6 +11,8 @@ import type {
   WhatsAppSessionState,
 } from '../types/crm';
 
+export { supabase };
+
 const LEADS_KEY = 'goodshield_crm_leads_v2';
 const SENT_LOG_KEY = 'goodshield_crm_sent_log_v1';
 const WA_SESSION_KEY = 'goodshield_crm_wa_session_v1';
