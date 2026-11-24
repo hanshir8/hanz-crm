@@ -146,6 +146,49 @@ export function restoreSampleLeads(): Lead[] {
   return samples;
 }
 
+export async function updateLead(updatedLead: Lead): Promise<Lead> {
+  const existing = loadLeads();
+  const exists = existing.some((item) => item.id === updatedLead.id);
+  const nextLeads = exists
+    ? existing.map((item) => (item.id === updatedLead.id ? updatedLead : item))
+    : [updatedLead, ...existing];
+
+  saveLeads(nextLeads);
+
+  if (supabase) {
+    const { error } = await supabase.from('leads').upsert(
+      {
+        id: updatedLead.id,
+        name: updatedLead.name,
+        phone: updatedLead.phone || null,
+        vehicle_model: updatedLead.interest || null,
+        notes: updatedLead.notes || null,
+        status: updatedLead.status.toLowerCase(),
+        next_follow_up_at: updatedLead.nextReminderAt || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    );
+    if (error) {
+      console.warn('Supabase updateLead sync warning:', error.message);
+    }
+  }
+
+  return updatedLead;
+}
+
+export async function deleteLead(leadId: string): Promise<void> {
+  const filtered = loadLeads().filter((item) => item.id !== leadId);
+  saveLeads(filtered);
+
+  if (supabase) {
+    const { error } = await supabase.from('leads').delete().eq('id', leadId);
+    if (error) {
+      console.warn('Supabase deleteLead sync warning:', error.message);
+    }
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Reminder buckets                                                    */
 /* ------------------------------------------------------------------ */
@@ -197,14 +240,22 @@ export function matchesSmartView(lead: Lead, view: SmartViewId): boolean {
 /* WhatsApp sending + quota                                            */
 /* ------------------------------------------------------------------ */
 
-export function sanitizePhoneForWhatsApp(phone?: string): string {
+export function sanitizePhoneForWhatsApp(
+  phone?: string,
+  defaultCountryCode = '60'
+): string {
   if (!phone) return '';
-  return phone.replace(/[^\d]/g, '');
+  let digits = phone.replace(/[^\d]/g, '');
+  if (digits.startsWith('0') && defaultCountryCode) {
+    digits = `${defaultCountryCode}${digits.slice(1)}`;
+  }
+  return digits;
 }
 
 export function buildWhatsAppMeUrl(phone: string | undefined, message: string): string {
   const clean = sanitizePhoneForWhatsApp(phone);
-  const text = encodeURIComponent(message);
+  const cleanMessage = (message ?? '').replace(/\r\n/g, '\n').trim();
+  const text = encodeURIComponent(cleanMessage);
   return clean
     ? `https://api.whatsapp.com/send?phone=${clean}&text=${text}`
     : `https://api.whatsapp.com/send?text=${text}`;
