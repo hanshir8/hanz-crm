@@ -42,7 +42,7 @@ export function QrModal({
         className="fixed inset-0 bg-black/30 backdrop-blur-[1px]"
         onClick={onClose}
       />
-      <div className="relative z-10 w-full max-w-sm bg-white rounded-3xl border border-black/10 shadow-xl p-6 space-y-4">
+      <div className="relative z-10 w-full max-w-sm max-h-[90vh] overflow-y-auto bg-white rounded-3xl border border-black/10 shadow-xl p-6 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-xl bg-[#34C759]/10 text-[#1E7E34] flex items-center justify-center">
