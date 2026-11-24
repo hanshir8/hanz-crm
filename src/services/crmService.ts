@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import type { Session } from '@supabase/supabase-js';
 import type {
   DesktopNotificationPermission,
   FollowUpTemplate,
@@ -19,6 +20,7 @@ const DEFAULT_PASSCODE = '1234';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const DAILY_SEND_LIMIT = 45;
+export const DAILY_QUOTA_LIMIT = DAILY_SEND_LIMIT;
 
 /* ------------------------------------------------------------------ */
 /* Storage & Passcode helpers                                          */
@@ -98,8 +100,6 @@ export const FOLLOW_UP_TEMPLATES: FollowUpTemplate[] = [
   },
 ];
 
-// Returns the same text under several field names so it works
-// with whichever one LeadInspector reads.
 export function generateSmartDrafts(lead: Lead) {
   return FOLLOW_UP_TEMPLATES.map((tpl) => {
     const text = tpl.buildMessage(lead);
@@ -117,8 +117,34 @@ export function generateSmartDrafts(lead: Lead) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Leads & Supabase Sync                                               */
+/* Normalization & Schema Mapping                                      */
 /* ------------------------------------------------------------------ */
+
+export function normalizeLeadStatus(raw: unknown): LeadStatus {
+  const val = String(raw ?? 'new').trim().toLowerCase();
+  if (val === 'contacted') return 'Contacted';
+  if (val === 'replied') return 'Replied';
+  if (val === 'closed') return 'Closed';
+  return 'New';
+}
+
+export function daysToSqlCadence(days: ReminderCadence | number | undefined): string {
+  const d = Number(days ?? 3);
+  if (!d || d <= 0) return 'off';
+  if (d === 2) return 'every_2_days';
+  if (d === 4) return 'every_4_days';
+  if (d === 7) return 'every_7_days';
+  return 'every_3_days';
+}
+
+export function sqlCadenceToReminderDays(cadence: unknown): ReminderCadence {
+  const val = String(cadence ?? '').trim().toLowerCase();
+  if (val === 'off' || val === '0' || val === 'none') return 0;
+  if (val === 'every_2_days' || val === '2') return 2;
+  if (val === 'every_4_days' || val === '4') return 4;
+  if (val === 'every_7_days' || val === '7') return 7;
+  return 3;
+}
 
 export function computeNextReminderDate(
   days: ReminderCadence,
@@ -128,30 +154,20 @@ export function computeNextReminderDate(
   return new Date(fromDate.getTime() + days * DAY_MS).toISOString();
 }
 
-function reminderDaysToSqlCadence(days: ReminderCadence): string {
-  if (!days || days <= 0) return 'off';
-  if (days === 2) return 'every_2_days';
-  if (days === 4) return 'every_4_days';
-  if (days === 7) return 'every_7_days';
-  return 'every_3_days';
+export function computeNextFollowUpIso(
+  days: ReminderCadence | number | undefined,
+  fromIso?: string
+): string {
+  const d = Number(days ?? 3);
+  const baseMs = fromIso ? new Date(fromIso).getTime() : Date.now();
+  const safeBase = Number.isFinite(baseMs) ? baseMs : Date.now();
+  const effectiveDays = d > 0 ? d : 3;
+  return new Date(safeBase + effectiveDays * DAY_MS).toISOString();
 }
 
-function sqlCadenceToReminderDays(cadence: unknown): ReminderCadence {
-  const val = String(cadence ?? '').trim().toLowerCase();
-  if (val === 'off' || val === '0' || val === 'none') return 0;
-  if (val === 'every_2_days' || val === '2') return 2;
-  if (val === 'every_4_days' || val === '4') return 4;
-  if (val === 'every_7_days' || val === '7') return 7;
-  return 3;
-}
-
-function toDisplayStatus(raw: unknown): LeadStatus {
-  const val = String(raw ?? 'new').trim().toLowerCase();
-  if (val === 'contacted') return 'Contacted';
-  if (val === 'replied') return 'Replied';
-  if (val === 'closed') return 'Closed';
-  return 'New';
-}
+/* ------------------------------------------------------------------ */
+/* Leads & Supabase Sync                                               */
+/* ------------------------------------------------------------------ */
 
 function buildSampleLeads(): Lead[] {
   const now = new Date();
@@ -193,6 +209,14 @@ export function saveLeads(leads: Lead[]): void {
   writeJson(LEADS_KEY, leads);
 }
 
+export function loadCachedLeads(): Lead[] {
+  return loadLeads();
+}
+
+export function saveCachedLeads(leads: Lead[]): void {
+  saveLeads(leads);
+}
+
 export function restoreSampleLeads(): Lead[] {
   const samples = buildSampleLeads();
   saveLeads(samples);
@@ -212,7 +236,9 @@ export async function fetchLeadsFromSupabase(userId?: string): Promise<Lead[]> {
 
   const { data, error } = await client
     .from('leads')
-    .select('id, user_id, name, phone, vehicle_model, notes, status, cadence, next_follow_up_at, created_at, updated_at')
+    .select(
+      'id, user_id, name, phone, vehicle_model, notes, status, cadence, next_follow_up_at, created_at, updated_at'
+    )
     .eq('user_id', activeUserId)
     .order('next_follow_up_at', { ascending: true });
 
@@ -230,7 +256,7 @@ export async function fetchLeadsFromSupabase(userId?: string): Promise<Lead[]> {
       phone: String(row.phone ?? local?.phone ?? ''),
       interest: String(row.vehicle_model ?? local?.interest ?? ''),
       notes: String(row.notes ?? local?.notes ?? ''),
-      status: toDisplayStatus(row.status),
+      status: normalizeLeadStatus(row.status),
       reminderDays: sqlCadenceToReminderDays(row.cadence),
       lastContactedAt: local?.lastContactedAt ?? null,
       nextReminderAt: row.next_follow_up_at ?? local?.nextReminderAt ?? null,
@@ -243,6 +269,44 @@ export async function fetchLeadsFromSupabase(userId?: string): Promise<Lead[]> {
   return mapped;
 }
 
+export async function fetchUserLeadsFromSupabase(userId?: string): Promise<Lead[]> {
+  return fetchLeadsFromSupabase(userId);
+}
+
+export async function upsertLeadInSupabase(lead: Lead, userId?: string): Promise<Lead> {
+  const client = supabase;
+  if (!client) return lead;
+
+  let activeUserId = userId;
+  if (!activeUserId) {
+    const { data: sessionData } = await client.auth.getSession();
+    activeUserId = sessionData.session?.user?.id;
+  }
+  if (!activeUserId) return lead;
+
+  const { error } = await client.from('leads').upsert(
+    {
+      id: lead.id,
+      user_id: activeUserId,
+      name: lead.name,
+      phone: lead.phone || null,
+      vehicle_model: lead.interest || null,
+      notes: lead.notes || null,
+      status: String(lead.status || 'new').toLowerCase(),
+      cadence: daysToSqlCadence(lead.reminderDays),
+      next_follow_up_at: lead.nextReminderAt || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'id' }
+  );
+
+  if (error) {
+    console.warn('Supabase upsertLeadInSupabase warning:', error.message);
+  }
+
+  return lead;
+}
+
 export async function updateLead(updatedLead: Lead): Promise<Lead> {
   const existing = loadLeads();
   const exists = existing.some((item) => item.id === updatedLead.id);
@@ -251,56 +315,35 @@ export async function updateLead(updatedLead: Lead): Promise<Lead> {
     : [updatedLead, ...existing];
 
   saveLeads(nextLeads);
+  await upsertLeadInSupabase(updatedLead);
+  return updatedLead;
+}
 
+export async function deleteLeadInSupabase(leadId: string, userId?: string): Promise<void> {
   const client = supabase;
-  if (client) {
+  if (!client) return;
+
+  let activeUserId = userId;
+  if (!activeUserId) {
     const { data: sessionData } = await client.auth.getSession();
-    const userId = sessionData.session?.user?.id;
-
-    if (!userId) {
-      return updatedLead;
-    }
-
-    const { error } = await client.from('leads').upsert(
-      {
-        id: updatedLead.id,
-        user_id: userId,
-        name: updatedLead.name,
-        phone: updatedLead.phone || null,
-        vehicle_model: updatedLead.interest || null,
-        notes: updatedLead.notes || null,
-        status: (updatedLead.status || 'new').toLowerCase(),
-        cadence: reminderDaysToSqlCadence(updatedLead.reminderDays),
-        next_follow_up_at: updatedLead.nextReminderAt || new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'id' }
-    );
-    if (error) {
-      console.warn('Supabase updateLead sync warning:', error.message);
-    }
+    activeUserId = sessionData.session?.user?.id;
   }
 
-  return updatedLead;
+  let query = client.from('leads').delete().eq('id', leadId);
+  if (activeUserId) {
+    query = query.eq('user_id', activeUserId);
+  }
+
+  const { error } = await query;
+  if (error) {
+    console.warn('Supabase deleteLeadInSupabase warning:', error.message);
+  }
 }
 
 export async function deleteLead(leadId: string): Promise<void> {
   const filtered = loadLeads().filter((item) => item.id !== leadId);
   saveLeads(filtered);
-
-  const client = supabase;
-  if (client) {
-    const { data: sessionData } = await client.auth.getSession();
-    const userId = sessionData.session?.user?.id;
-    let query = client.from('leads').delete().eq('id', leadId);
-    if (userId) {
-      query = query.eq('user_id', userId);
-    }
-    const { error } = await query;
-    if (error) {
-      console.warn('Supabase deleteLead sync warning:', error.message);
-    }
-  }
+  await deleteLeadInSupabase(leadId);
 }
 
 /* ------------------------------------------------------------------ */
@@ -389,6 +432,14 @@ export function getQuotaStatus(): SendQuotaStatus {
     remaining,
     isLocked: remaining === 0,
   };
+}
+
+export function getSentCountLast24h(): number {
+  return readSentLog().length;
+}
+
+export function recordSentTimestamp(): void {
+  writeJson(SENT_LOG_KEY, [...readSentLog(), Date.now()]);
 }
 
 export async function sendWhatsAppFollowUp(
@@ -580,6 +631,10 @@ export async function getSupabaseSession() {
   if (!client) return null;
   const { data } = await client.auth.getSession();
   return data.session;
+}
+
+export async function getActiveSession(): Promise<Session | null> {
+  return getSupabaseSession();
 }
 
 export async function clearSupabaseAuthSession(): Promise<void> {
