@@ -1,7 +1,38 @@
 import { supabase } from '../lib/supabase';
-import type { Lead, LeadStatus, ReminderCadence } from '../types/crm';
+import type {
+  FollowUpTemplate,
+  Lead,
+  LeadStatus,
+  QuotaConfig,
+  ReminderCadence,
+  SmartViewId,
+  WorkspaceSession,
+} from '../types/crm';
 
-const LOCAL_STORAGE_KEY = 'goodshield_crm_leads_v1';
+const LEADS_STORAGE_KEY = 'goodshield_crm_leads_v1';
+const QUOTA_STORAGE_KEY = 'goodshield_crm_quota_v1';
+const SESSION_STORAGE_KEY = 'goodshield_crm_session_v1';
+
+export const FOLLOW_UP_TEMPLATES: FollowUpTemplate[] = [
+  {
+    id: 'tpl-gentle-check',
+    title: 'Gentle Follow-Up (3–4 Days)',
+    channel: 'whatsapp',
+    body: 'Hi {name}, just checking in on {vehicle}—did you have any questions about the details or availability I shared earlier?',
+  },
+  {
+    id: 'tpl-value-tip',
+    title: 'Helpful Protection / Spec Tip',
+    channel: 'whatsapp',
+    body: 'Hi {name}, sharing a quick tip for {vehicle}: planning ahead early helps avoid last-minute delays. Let me know if you would like a quick comparison or quote.',
+  },
+  {
+    id: 'tpl-slot-check',
+    title: 'Availability & Next Step',
+    channel: 'whatsapp',
+    body: 'Hi {name}, I have a couple of follow-up slots open this week if you are still considering {vehicle}. Would morning or afternoon work better for a quick chat?',
+  },
+];
 
 interface LeadRow {
   id: string;
@@ -51,7 +82,7 @@ function leadToRow(lead: Lead): LeadRow {
 
 function readLocalLeads(): Lead[] {
   try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    const raw = localStorage.getItem(LEADS_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -62,9 +93,9 @@ function readLocalLeads(): Lead[] {
 
 function writeLocalLeads(leads: Lead[]): void {
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(leads));
+    localStorage.setItem(LEADS_STORAGE_KEY, JSON.stringify(leads));
   } catch {
-    // Ignore storage quota errors in restricted browser contexts
+    // Ignore storage quota errors
   }
 }
 
@@ -138,5 +169,136 @@ export async function deleteLead(leadId: string): Promise<void> {
   const { error } = await supabase.from('leads').delete().eq('id', leadId);
   if (error) {
     console.warn('Supabase deleteLead error:', error.message);
+  }
+}
+
+export function sanitizePhoneForWhatsApp(phone?: string): string {
+  if (!phone) return '';
+  return phone.replace(/[^\d]/g, '');
+}
+
+export function personalizeTemplateText(templateText: string, lead: Lead): string {
+  const firstName = lead.name?.trim().split(/\s+/)[0] || 'there';
+  const vehicle = lead.vehicleModel?.trim() || 'your inquiry';
+  return templateText
+    .replace(/\{name\}/gi, firstName)
+    .replace(/\{fullName\}/gi, lead.name || 'there')
+    .replace(/\{vehicle\}/gi, vehicle)
+    .replace(/\{vehicleModel\}/gi, vehicle);
+}
+
+export function buildWhatsAppMeUrl(phone: string | undefined, message: string): string {
+  const cleanPhone = sanitizePhoneForWhatsApp(phone);
+  const encodedText = encodeURIComponent(message);
+  if (cleanPhone) {
+    return `https://wa.me/${cleanPhone}?text=${encodedText}`;
+  }
+  return `https://wa.me/?text=${encodedText}`;
+}
+
+export function generateSmartDrafts(lead: Lead): Array<{ id: string; label: string; text: string }> {
+  return FOLLOW_UP_TEMPLATES.map((tpl) => ({
+    id: tpl.id,
+    label: tpl.title,
+    text: personalizeTemplateText(tpl.body, lead),
+  }));
+}
+
+export function getCadenceDays(cadence: ReminderCadence): number {
+  switch (cadence) {
+    case 'daily':
+      return 1;
+    case 'every_2_days':
+      return 2;
+    case 'every_3_days':
+      return 3;
+    case 'weekly':
+      return 7;
+    default:
+      return 3;
+  }
+}
+
+export function computeNextFollowUpIso(cadence: ReminderCadence, fromDate = new Date()): string {
+  const days = getCadenceDays(cadence);
+  const next = new Date(fromDate.getTime() + days * 24 * 60 * 60 * 1000);
+  return next.toISOString();
+}
+
+export function getLeadReminderMeta(lead: Lead): {
+  bucket: SmartViewId;
+  label: string;
+  isDueToday: boolean;
+  isOverdue: boolean;
+} {
+  if (lead.status === 'closed') {
+    return { bucket: 'closed', label: 'Closed', isDueToday: false, isOverdue: false };
+  }
+  if (lead.status === 'replied') {
+    return { bucket: 'replied', label: 'Replied', isDueToday: false, isOverdue: false };
+  }
+
+  const now = new Date();
+  const followUp = new Date(lead.nextFollowUpAt);
+
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+  if (Number.isNaN(followUp.getTime())) {
+    return { bucket: 'upcoming', label: 'Scheduled', isDueToday: false, isOverdue: false };
+  }
+
+  if (followUp < startOfToday) {
+    return { bucket: 'overdue', label: 'Overdue', isDueToday: false, isOverdue: true };
+  }
+
+  if (followUp <= endOfToday) {
+    return { bucket: 'due_today', label: 'Due Today', isDueToday: true, isOverdue: false };
+  }
+
+  return { bucket: 'upcoming', label: 'Upcoming', isDueToday: false, isOverdue: false };
+}
+
+export function loadQuotaConfig(): QuotaConfig {
+  try {
+    const raw = localStorage.getItem(QUOTA_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        dailyTarget: Number(parsed.dailyTarget) || 25,
+        weeklyTarget: Number(parsed.weeklyTarget) || 120,
+      };
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return { dailyTarget: 25, weeklyTarget: 120 };
+}
+
+export function saveQuotaConfig(config: QuotaConfig): void {
+  try {
+    localStorage.setItem(QUOTA_STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function loadWorkspaceSession(): WorkspaceSession {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (raw) {
+      return JSON.parse(raw);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return { isLocked: false, hasPasscode: false };
+}
+
+export function saveWorkspaceSession(session: WorkspaceSession): void {
+  try {
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  } catch {
+    // Ignore storage errors
   }
 }
