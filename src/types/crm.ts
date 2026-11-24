@@ -1,68 +1,52 @@
-export type LeadStatus = 'New' | 'Contacted' | 'Replied' | 'Closed';
+export type LeadStatus = 'new' | 'contacted' | 'replied' | 'closed';
 
-// Days until next reminder. 0 = no automatic reminder.
-export type ReminderCadence = 0 | 3 | 4 | 7;
+export type ReminderCadence = 0 | 2 | 3 | 4 | 7;
+
+export type SqlCadence =
+  | 'off'
+  | 'every_2_days'
+  | 'every_3_days'
+  | 'every_4_days'
+  | 'every_7_days';
 
 export type SmartViewId =
+  | 'all'
   | 'due_today'
   | 'overdue'
-  | 'upcoming'
+  | 'new'
+  | 'contacted'
   | 'replied'
-  | 'all'
   | 'closed';
 
-export interface LeadHistoryEntry {
+export interface FollowUpHistoryItem {
   id: string;
-  type: 'whatsapp_sent' | 'note' | 'status_change';
   message: string;
   templateName?: string;
-  at: string;
+  sentAt?: string;
+  at?: string;
 }
 
 export interface Lead {
   id: string;
+  userId?: string | null;
   name: string;
   phone: string;
-  interest: string;
+  email?: string;
+  interest: string; // Mirrors SQL vehicle_model
+  vehicleModel?: string;
+  notes?: string;
   status: LeadStatus;
-  reminderDays: ReminderCadence;
-  lastContactedAt: string | null;
-  nextReminderAt: string | null;
-  notes: string;
-  history: LeadHistoryEntry[];
-  createdAt: string;
-}
-
-export interface FollowUpTemplate {
-  id: string;
-  name: string;
-  description?: string;
-  buildMessage: (lead: Lead) => string;
-}
-
-export interface SendQuotaStatus {
-  sentIn24h: number;
-  limit: number;
-  remaining: number;
-  isLocked: boolean;
-}
-
-export interface WhatsAppSessionState {
-  status: 'qr' | 'connected' | 'disconnected';
-  qrCode?: string;
-  pairedAt?: string;
+  reminderDays: ReminderCadence; // Mirrors SQL cadence
+  cadence?: SqlCadence;
+  nextFollowUpAt?: string; // Mirrors SQL next_follow_up_at
+  lastContactedAt?: string;
+  createdAt?: string;
   updatedAt?: string;
+  history?: FollowUpHistoryItem[];
 }
 
-export type DesktopNotificationPermission = NotificationPermission | 'unsupported';
-
-export type ToastType = 'success' | 'info' | 'warning' | 'error';
-
-export interface ToastItem {
+export interface SmartDraftOption {
   id: string;
-  type: ToastType;
-  title: string;
-  description?: string;
-  actionLabel?: string;
-  actionUrl?: string;
+  label: string;
+  message: string;
 }
