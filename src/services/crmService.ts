@@ -15,6 +15,7 @@ const SENT_LOG_KEY = 'goodshield_crm_sent_log_v1';
 const WA_SESSION_KEY = 'goodshield_crm_wa_session_v1';
 const NOTIFIED_KEY = 'goodshield_crm_notified_v1';
 const PASSCODE_KEY = 'goodshield_crm_passcode_v1';
+const DEFAULT_PASSCODE = '1234';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const DAILY_SEND_LIMIT = 45;
@@ -58,6 +59,11 @@ export function setStoredPasscode(passcode: string | null): void {
   } catch {
     // ignore storage errors
   }
+}
+
+export function resetStoredPasscodeToDefault(): string {
+  setStoredPasscode(DEFAULT_PASSCODE);
+  return DEFAULT_PASSCODE;
 }
 
 /* ------------------------------------------------------------------ */
