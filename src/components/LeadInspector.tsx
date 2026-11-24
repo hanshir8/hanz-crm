@@ -149,7 +149,6 @@ export function LeadInspector({
     setSelectedTemplateName(defaultTpl ? getTemplateTitle(defaultTpl, 0) : undefined);
   }, [lead?.id]);
 
-  // Only revoke blob URLs when LeadInspector unmounts
   useEffect(() => {
     return () => {
       revokeItems(attachmentsRef.current);
