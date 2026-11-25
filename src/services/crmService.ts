@@ -21,7 +21,7 @@ const PASSCODE_KEY = 'goodshield_crm_passcode_v1';
 const DEFAULT_PASSCODE = '1234';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-export const DAILY_SEND_LIMIT = 45;
+export const DAILY_SEND_LIMIT = 100;
 export const DAILY_QUOTA_LIMIT = DAILY_SEND_LIMIT;
 
 const DEFAULT_WA_SESSION: WhatsAppSessionState = {
