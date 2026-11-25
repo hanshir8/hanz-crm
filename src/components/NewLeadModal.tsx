@@ -117,7 +117,7 @@ export function NewLeadModal({
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g., Aiman Hakim"
+              placeholder="e.g., Mr/Ms Smith "
               className="w-full px-3.5 py-2 rounded-xl border border-black/15 bg-[#FAFAFC] text-sm focus:outline-none focus:border-[#0071E3]"
             />
           </div>
