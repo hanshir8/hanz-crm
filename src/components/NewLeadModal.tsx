@@ -144,7 +144,7 @@ export function NewLeadModal({
                 type="text"
                 value={interest}
                 onChange={(e) => setInterest(e.target.value)}
-                placeholder="e.g., Tiggo 7 PHEV"
+                placeholder="e.g., Model / Package"
                 className="w-full px-3.5 py-2 rounded-xl border border-black/15 bg-[#FAFAFC] text-sm focus:outline-none focus:border-[#0071E3]"
               />
             </div>
